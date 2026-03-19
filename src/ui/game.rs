@@ -12,6 +12,7 @@
 use std::collections::VecDeque;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use regex::Regex;
 use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
@@ -19,6 +20,45 @@ use ratatui::{
     widgets::{Block, Paragraph, Wrap},
     Frame,
 };
+use tracing::warn;
+
+use crate::config::{Alias, Trigger as TriggerCfg};
+
+// ---------------------------------------------------------------------------
+// Public action type
+// ---------------------------------------------------------------------------
+
+/// Actions returned by [`handle_key`] to the main event loop.
+#[derive(Debug)]
+pub enum GameAction {
+    /// Send a line to the server.
+    SendLine(String),
+    /// Gracefully disconnect and return to the selection screen.
+    Disconnect,
+    /// Quit the application.
+    Quit,
+    /// Copy text to the system clipboard via the OSC 52 escape sequence.
+    CopyToClipboard(String),
+    /// Persist a new (or updated) alias for the connected character.
+    AddAlias { name: String, expansion: String },
+    /// Delete an alias by name.
+    RemoveAlias(String),
+    /// Persist a new trigger for the connected character.
+    AddTrigger { pattern: String, color: Option<String>, send: Option<String> },
+    /// Delete a trigger whose id starts with the given prefix.
+    RemoveTrigger(String),
+}
+
+// ---------------------------------------------------------------------------
+// Compiled trigger (runtime representation)
+// ---------------------------------------------------------------------------
+
+struct CompiledTrigger {
+    id: String,
+    regex: Regex,
+    color: Option<Color>,
+    send: Option<String>,
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -54,6 +94,15 @@ pub struct GameState {
     pub prompt: Option<Line<'static>>,
     /// Height of the output inner area (updated every draw call, used for PgUp/PgDn).
     last_output_height: usize,
+    // ---- Phase 6 additions ----
+    /// Per-character aliases loaded at session start.
+    pub aliases: Vec<Alias>,
+    /// Compiled trigger patterns for this session.
+    triggers: Vec<CompiledTrigger>,
+    /// Lines queued for auto-send by trigger actions; drained by the main loop.
+    pub auto_send_queue: Vec<String>,
+    /// Whether copy mode is currently active.
+    pub copy_mode: bool,
 }
 
 impl GameState {
@@ -70,12 +119,35 @@ impl GameState {
             connected: false,
             prompt: None,
             last_output_height: 20,
+            aliases: Vec::new(),
+            triggers: Vec::new(),
+            auto_send_queue: Vec::new(),
+            copy_mode: false,
         }
     }
 
-    /// Parse an ANSI string and append it to the scrollback buffer.
+    /// Parse an ANSI string, apply trigger highlighting, and append to the scrollback buffer.
+    /// Any trigger auto-sends are pushed to `auto_send_queue`.
     pub fn push_line(&mut self, s: &str) {
-        let line = ansi_to_line(s);
+        let mut line = ansi_to_line(s);
+        // Apply triggers.
+        for trigger in &self.triggers {
+            if trigger.regex.is_match(s) {
+                if let Some(color) = trigger.color {
+                    line = Line::from(
+                        line.spans
+                            .into_iter()
+                            .map(|sp| Span::styled(sp.content, sp.style.fg(color)))
+                            .collect::<Vec<_>>(),
+                    );
+                }
+                if let Some(cmd) = &trigger.send {
+                    if !cmd.is_empty() {
+                        self.auto_send_queue.push(cmd.clone());
+                    }
+                }
+            }
+        }
         self.lines.push_back(line);
         while self.lines.len() > SCROLLBACK_MAX {
             self.lines.pop_front();
@@ -153,29 +225,43 @@ impl GameState {
     // Input confirm
     // ------------------------------------------------------------------
 
-    /// Finalise the input, push to history, and return the line to send.
-    fn confirm_input(&mut self) -> Option<String> {
-        let line = self.input.trim_end().to_string();
+    /// Finalise the input, push to history, expand aliases, and return the
+    /// action to perform.
+    fn confirm_input(&mut self) -> Option<GameAction> {
+        let raw = self.input.trim_end().to_string();
         self.input.clear();
         self.input_cursor = 0;
         self.history_idx = None;
         self.history_snapshot.clear();
 
-        // Echo input into the output buffer so the user sees what they typed.
-        if !line.is_empty() {
-            let echo = Line::from(vec![
-                Span::styled("▶ ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-                Span::raw(line.clone()),
-            ]);
-            self.lines.push_back(echo);
-
-            // Deduplicate consecutive identical history entries.
-            if self.history.last().map(|l| l != &line).unwrap_or(true) {
-                self.history.push(line.clone());
-            }
+        if raw.is_empty() {
+            return None;
         }
 
-        Some(line)
+        // Always record raw input in history.
+        if self.history.last().map(|l| l != &raw).unwrap_or(true) {
+            self.history.push(raw.clone());
+        }
+
+        // Meta-commands start with '/'.
+        if raw.starts_with('/') {
+            return self.handle_meta_command(&raw);
+        }
+
+        // Expand aliases.
+        let line = self.expand_alias(&raw);
+
+        // Echo into scrollback.
+        let echo = Line::from(vec![
+            Span::styled("▶ ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::raw(line.clone()),
+        ]);
+        self.lines.push_back(echo);
+        while self.lines.len() > SCROLLBACK_MAX {
+            self.lines.pop_front();
+        }
+
+        Some(GameAction::SendLine(line))
     }
 
     // ------------------------------------------------------------------
@@ -191,7 +277,170 @@ impl GameState {
     pub fn on_disconnect(&mut self) {
         self.connected = false;
     }
-}
+
+    // ------------------------------------------------------------------
+    // Aliases & triggers
+    // ------------------------------------------------------------------
+
+    pub fn set_aliases(&mut self, aliases: Vec<Alias>) {
+        self.aliases = aliases;
+    }
+
+    /// Compile and install trigger rules for this session.
+    /// Invalid regexes are logged as warnings and skipped.
+    pub fn set_triggers(&mut self, triggers: Vec<TriggerCfg>) {
+        self.triggers = triggers
+            .into_iter()
+            .filter_map(|t| match Regex::new(&t.pattern) {
+                Ok(regex) => Some(CompiledTrigger {
+                    id: t.id,
+                    regex,
+                    color: t.color.as_deref().and_then(parse_color_name),
+                    send: t.send,
+                }),
+                Err(e) => {
+                    warn!("Invalid trigger regex {:?}: {e}", t.pattern);
+                    None
+                }
+            })
+            .collect();
+    }
+
+    fn expand_alias(&self, line: &str) -> String {
+        // Exact-line match first, then first-word match (with tail appended).
+        if let Some(a) = self.aliases.iter().find(|a| a.name == line) {
+            return a.expansion.clone();
+        }
+        let first = line.split_whitespace().next().unwrap_or("");
+        if let Some(a) = self.aliases.iter().find(|a| a.name == first) {
+            let tail = &line[first.len()..];
+            return format!("{}{tail}", a.expansion);
+        }
+        line.to_string()
+    }
+
+    // ------------------------------------------------------------------
+    // System messages
+    // ------------------------------------------------------------------
+
+    /// Push a client-side informational message into the scrollback buffer.
+    pub fn push_system(&mut self, msg: &str) {
+        let line = Line::from(vec![
+            Span::styled("\u{00bb} ", Style::default().fg(Color::Cyan)),
+            Span::styled(msg.to_string(), Style::default().fg(Color::Cyan)),
+        ]);
+        self.lines.push_back(line);
+        while self.lines.len() > SCROLLBACK_MAX {
+            self.lines.pop_front();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Meta-command parsing  (/alias, /trigger, /disconnect, /quit, …)
+    // ------------------------------------------------------------------
+
+    fn handle_meta_command(&mut self, input: &str) -> Option<GameAction> {
+        let stripped = &input[1..];
+        let (cmd, args) = stripped
+            .split_once(' ')
+            .map(|(c, a)| (c, a.trim()))
+            .unwrap_or((stripped, ""));
+
+        match cmd.to_lowercase().as_str() {
+            "disconnect" | "disc" => Some(GameAction::Disconnect),
+            "quit" | "exit"      => Some(GameAction::Quit),
+
+            "alias" | "al" => {
+                if args.is_empty() {
+                    if self.aliases.is_empty() {
+                        self.push_system("No aliases defined.  Usage: /alias <name> <expansion>");
+                    } else {
+                        self.push_system("Aliases:");
+                        let msgs: Vec<String> = self.aliases.iter()
+                            .map(|a| format!("  {} \u{2192} {}", a.name, a.expansion))
+                            .collect();
+                        for m in msgs { self.push_system(&m); }
+                    }
+                    None
+                } else {
+                    match args.split_once(' ') {
+                        None => {
+                            match self.aliases.iter().find(|a| a.name == args) {
+                                Some(a) => self.push_system(&format!("  {} \u{2192} {}", a.name, a.expansion)),
+                                None    => self.push_system(&format!("No alias named '{args}'."),),
+                            }
+                            None
+                        }
+                        Some((name, expansion)) => Some(GameAction::AddAlias {
+                            name: name.to_string(),
+                            expansion: expansion.to_string(),
+                        }),
+                    }
+                }
+            }
+
+            "unalias" | "unal" => {
+                if args.is_empty() {
+                    self.push_system("Usage: /unalias <name>");
+                    None
+                } else {
+                    Some(GameAction::RemoveAlias(args.to_string()))
+                }
+            }
+
+            "trigger" | "trig" => {
+                let (sub, rest) = args
+                    .split_once(' ')
+                    .map(|(s, r)| (s, r.trim()))
+                    .unwrap_or((args, ""));
+
+                match sub {
+                    "" | "list" => {
+                        if self.triggers.is_empty() {
+                            self.push_system("No triggers defined.  Usage: /trigger add <pattern> [color=NAME] [send=CMD]");
+                        } else {
+                            self.push_system("Triggers:");
+                            let items: Vec<String> = self.triggers.iter().map(|t| {
+                                let id_short = &t.id[..8.min(t.id.len())];
+                                let send = t.send.as_deref().unwrap_or("-");
+                                format!("  [{id_short}]  /{}/ send={send}", t.regex.as_str())
+                            }).collect();
+                            for s in items { self.push_system(&s); }
+                        }
+                        None
+                    }
+                    "add" => {
+                        if rest.is_empty() {
+                            self.push_system("Usage: /trigger add <pattern> [color=NAME] [send=CMD]");
+                            None
+                        } else {
+                            let (pattern, color, send) = parse_trigger_args(rest);
+                            Some(GameAction::AddTrigger { pattern, color, send })
+                        }
+                    }
+                    "del" | "rm" | "remove" | "delete" => {
+                        if rest.is_empty() {
+                            self.push_system("Usage: /trigger del <id>");
+                            None
+                        } else {
+                            Some(GameAction::RemoveTrigger(rest.to_string()))
+                        }
+                    }
+                    _ => {
+                        self.push_system("Usage: /trigger list | /trigger add <pattern> [color=NAME] [send=CMD] | /trigger del <id>");
+                        None
+                    }
+                }
+            }
+
+            _ => {
+                self.push_system(&format!("Unknown command: {input}"));
+                self.push_system("  Available: /alias, /unalias, /trigger, /disconnect, /quit");
+                None
+            }
+        }
+    }
+} // end impl GameState
 
 // ---------------------------------------------------------------------------
 // ANSI / VT100 parser
@@ -376,13 +625,20 @@ fn apply_sgr(mut style: Style, params: &str) -> Style {
 
 /// Handle a key event in game mode.
 ///
-/// Returns `Some(line)` when the user confirms a command that should be sent
-/// to the server.  Returns `None` for all other keystrokes.
-///
-/// The caller is responsible for the disconnect key (Ctrl+Q) and global
-/// Ctrl+C — this function only handles input editing, history, and scrollback.
-pub fn handle_key(state: &mut GameState, key: KeyEvent) -> Option<String> {
+/// Returns `Some(GameAction)` when an action needs to be taken by the caller.
+/// Returns `None` for all other keystrokes (pure editing operations).
+pub fn handle_key(state: &mut GameState, key: KeyEvent) -> Option<GameAction> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+    // Ctrl+Q — disconnect and return to the selection screen.
+    if ctrl && key.code == KeyCode::Char('q') {
+        return Some(GameAction::Disconnect);
+    }
+
+    // In copy mode most keys have different bindings.
+    if state.copy_mode {
+        return handle_copy_mode(state, key);
+    }
 
     match key.code {
         // ---- Confirm / send ----
@@ -428,6 +684,12 @@ pub fn handle_key(state: &mut GameState, key: KeyEvent) -> Option<String> {
         }
         KeyCode::Down if ctrl => {
             state.scroll_down(1);
+            None
+        }
+
+        // ---- Enter copy mode ----
+        KeyCode::Char('y') if ctrl => {
+            state.copy_mode = true;
             None
         }
 
@@ -513,14 +775,97 @@ pub fn handle_key(state: &mut GameState, key: KeyEvent) -> Option<String> {
         KeyCode::Char(c) if !ctrl => {
             state.input.insert(state.input_cursor, c);
             state.input_cursor += c.len_utf8();
-            // Leave history_idx so the user can still navigate without losing position,
-            // but we do reset it so the next Up starts fresh from this edit.
             state.history_idx = None;
             None
         }
 
         _ => None,
     }
+}
+
+/// Handle a key event while copy mode is active.
+fn handle_copy_mode(state: &mut GameState, key: KeyEvent) -> Option<GameAction> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            state.copy_mode = false;
+            None
+        }
+        KeyCode::Up                 => { state.scroll_up(1);  None }
+        KeyCode::Down               => { state.scroll_down(1); None }
+        KeyCode::PageUp             => { let n = state.last_output_height.max(1); state.scroll_up(n); None }
+        KeyCode::PageDown           => { let n = state.last_output_height.max(1); state.scroll_down(n); None }
+        KeyCode::Home if ctrl       => { state.scroll_to_top(); None }
+        KeyCode::End  if ctrl       => { state.scroll_to_bottom(); None }
+        KeyCode::Char('y')          => {
+            // Yank (copy) the bottom-most visible line.
+            let buf_len = state.lines.len();
+            let scroll  = state.scroll_offset.min(buf_len.saturating_sub(1));
+            let idx     = buf_len.saturating_sub(1 + scroll);
+            let text: String = state
+                .lines
+                .get(idx)
+                .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+                .unwrap_or_default();
+            state.copy_mode = false;
+            if text.is_empty() { None } else { Some(GameAction::CopyToClipboard(text)) }
+        }
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Trigger / color helpers
+// ---------------------------------------------------------------------------
+
+fn parse_color_name(name: &str) -> Option<Color> {
+    match name.to_lowercase().as_str() {
+        "black"                    => Some(Color::Black),
+        "red"                      => Some(Color::Red),
+        "green"                    => Some(Color::Green),
+        "yellow"                   => Some(Color::Yellow),
+        "blue"                     => Some(Color::Blue),
+        "magenta"                  => Some(Color::Magenta),
+        "cyan"                     => Some(Color::Cyan),
+        "gray" | "grey"            => Some(Color::Gray),
+        "dark_gray" | "darkgray"   => Some(Color::DarkGray),
+        "light_red"                => Some(Color::LightRed),
+        "light_green"              => Some(Color::LightGreen),
+        "light_yellow"             => Some(Color::LightYellow),
+        "light_blue"               => Some(Color::LightBlue),
+        "light_magenta"            => Some(Color::LightMagenta),
+        "light_cyan"               => Some(Color::LightCyan),
+        "white"                    => Some(Color::White),
+        _                          => None,
+    }
+}
+
+/// Parse `color=NAME` and `send=CMD` key=value suffixes from a trigger add string.
+/// Returns (pattern, color, send).
+fn parse_trigger_args(s: &str) -> (String, Option<String>, Option<String>) {
+    let mut rest  = s.to_string();
+    let mut color = None;
+    let mut send  = None;
+
+    // `send=` is parsed first because it may contain spaces (consumed to end).
+    if let Some(idx) = find_kv(&rest, "send") {
+        send = Some(rest[idx + "send=".len()..].trim().to_string());
+        rest = rest[..idx].trim().to_string();
+    }
+    if let Some(idx) = find_kv(&rest, "color") {
+        let val: &str = rest[idx + "color=".len()..].split_whitespace().next().unwrap_or("");
+        if !val.is_empty() { color = Some(val.to_string()); }
+        rest = rest[..idx].trim().to_string();
+    }
+
+    (rest, color, send)
+}
+
+/// Find the byte position of `key=` in `s`, only at a word boundary.
+fn find_kv(s: &str, key: &str) -> Option<usize> {
+    let needle = format!("{key}=");
+    if s.starts_with(&needle) { return Some(0); }
+    s.rfind(&format!(" {needle}")).map(|p| p + 1)
 }
 
 // ---------------------------------------------------------------------------
@@ -547,7 +892,8 @@ pub fn draw(frame: &mut Frame, state: &mut GameState, server_name: &str, char_na
     // Clamp scroll so we never go past the top.
     let scroll = state.scroll_offset.min(buf_len.saturating_sub(1));
 
-    let has_prompt = state.prompt.is_some() && scroll == 0;
+    // Suppress the live prompt while in copy mode so the highlighted line is always scrollback.
+    let has_prompt = state.prompt.is_some() && scroll == 0 && !state.copy_mode;
     // Reserve one row for the prompt when it's visible.
     let rows_for_lines =
         output_inner_h.saturating_sub(if has_prompt { 1 } else { 0 });
@@ -578,9 +924,36 @@ pub fn draw(frame: &mut Frame, state: &mut GameState, server_name: &str, char_na
         String::new()
     };
 
-    let output_block = Block::bordered()
-        .title(format!(" {} ", server_name))
-        .title_bottom(scroll_hint);
+    // Highlight the bottom-most visible line in copy mode.
+    if state.copy_mode && !text_lines.is_empty() {
+        let last = text_lines.len() - 1;
+        if let Some(line) = text_lines.get_mut(last) {
+            *line = Line::from(
+                line.spans.iter()
+                    .map(|sp| Span::styled(
+                        sp.content.clone(),
+                        sp.style.bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD),
+                    ))
+                    .collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    let output_block = if state.copy_mode {
+        Block::bordered()
+            .title(format!(" {} ", server_name))
+            .title_bottom(
+                Line::from(Span::styled(
+                    " COPY MODE  \u{2191}\u{2193} scroll  y yank  Esc exit ",
+                    Style::default().fg(Color::Black).bg(Color::Yellow),
+                ))
+            )
+            .border_style(Style::default().fg(Color::Yellow))
+    } else {
+        Block::bordered()
+            .title(format!(" {} ", server_name))
+            .title_bottom(scroll_hint.as_str())
+    };
 
     let output_para = Paragraph::new(Text::from(text_lines))
         .block(output_block)
@@ -619,7 +992,7 @@ pub fn draw(frame: &mut Frame, state: &mut GameState, server_name: &str, char_na
     };
     let info = format!(
         "{server_name}  /  {char_name}{lat_str}   \
-         ↑↓ history   PgUp/PgDn scroll   Ctrl+Q disconnect"
+         \u{2191}\u{2193} history   PgUp/PgDn scroll   Ctrl+Y copy   Ctrl+Q disconnect"
     );
     let status_line = Line::from(vec![conn_icon, Span::raw(info)]);
     frame.render_widget(

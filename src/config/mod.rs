@@ -12,6 +12,46 @@ use std::{
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
+// Aliases & Triggers
+// ---------------------------------------------------------------------------
+
+/// A command alias: replaces `name` (or a line starting with `name`) with
+/// `expansion` before the line is sent to the server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Alias {
+    pub name: String,
+    pub expansion: String,
+}
+
+/// A trigger: when an incoming line matches `pattern`, optionally re-colour
+/// it and/or auto-send a command back to the server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Trigger {
+    pub id: String,
+    /// A regular expression matched against the raw (ANSI-stripped) line.
+    pub pattern: String,
+    /// Named colour applied as foreground when the line matches
+    /// (e.g. `"red"`, `"yellow"`, `"cyan"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// If set, this command is automatically sent to the server when a match
+    /// is found.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub send: Option<String>,
+}
+
+impl Trigger {
+    pub fn new(pattern: impl Into<String>) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            pattern: pattern.into(),
+            color: None,
+            send: None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Data model
 // ---------------------------------------------------------------------------
 
@@ -60,6 +100,12 @@ pub struct Character {
     /// Free-form notes (e.g. race, class, level).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
+    /// Command aliases stored per character.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<Alias>,
+    /// Trigger rules stored per character.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub triggers: Vec<Trigger>,
 }
 
 impl Character {
@@ -71,6 +117,8 @@ impl Character {
             login: None,
             password_hint: None,
             notes: None,
+            aliases: Vec::new(),
+            triggers: Vec::new(),
         }
     }
 

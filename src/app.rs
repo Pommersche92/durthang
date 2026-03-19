@@ -28,6 +28,8 @@ pub struct App {
     pub connected_server: Option<String>,
     /// Display name of the currently connected character.
     pub connected_char: Option<String>,
+    /// Config id of the connected character (used to look up aliases/triggers).
+    pub connected_char_id: Option<String>,
     /// Game view state (scrollback, input, history, …).
     pub game: GameState,
 }
@@ -43,6 +45,7 @@ impl App {
             connection: None,
             connected_server: None,
             connected_char: None,
+            connected_char_id: None,
             game: GameState::new(),
         }
     }

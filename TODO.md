@@ -43,11 +43,11 @@
 - [x] Resize handling (redraw on `SIGWINCH`)
 
 ## Phase 6: Quality-of-Life Features
-- [ ] Alias system (map short commands to full strings, stored per character)
-- [ ] Trigger system (regex → action, e.g. highlight keywords or auto-respond)
-- [ ] `/connect`, `/disconnect`, `/quit` meta-commands in input line
-- [ ] Copy mode (scroll through output and copy text to clipboard)
-- [ ] Mouse support (optional, scroll wheel for scrollback)
+- [x] Alias system (map short commands to full strings, stored per character)
+- [x] Trigger system (regex → action, e.g. highlight keywords or auto-respond)
+- [x] `/connect`, `/disconnect`, `/quit` meta-commands in input line
+- [x] Copy mode (scroll through output and copy text to clipboard)
+- [x] Mouse support (optional, scroll wheel for scrollback)
 
 ## Phase 7: Sidebars
 - [ ] Implement sidebar panel system with visibility toggle (show/hide per panel)
