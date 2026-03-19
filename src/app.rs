@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use crate::config::Config;
+use crate::net::Connection;
 use crate::ui::selection::SelectState;
 
 /// Top-level application state machine.
@@ -20,6 +21,12 @@ pub struct App {
     pub config: Config,
     pub config_path: PathBuf,
     pub select: SelectState,
+    /// Active network connection, present while in `AppState::Game`.
+    pub connection: Option<Connection>,
+    /// Display name of the currently connected server (for the status bar).
+    pub connected_server: Option<String>,
+    /// Display name of the currently connected character.
+    pub connected_char: Option<String>,
 }
 
 impl App {
@@ -30,6 +37,9 @@ impl App {
             config,
             config_path,
             select: SelectState::new(),
+            connection: None,
+            connected_server: None,
+            connected_char: None,
         }
     }
 

@@ -25,13 +25,13 @@
 - [x] Status bar showing key hints
 
 ## Phase 4: Network Layer
-- [ ] Async runtime integration (`tokio`)
-- [ ] Raw TCP connection to MUD server
-- [ ] Telnet protocol handling (IAC negotiation — at minimum ECHO, NAWS, GMCP stubs)
-- [ ] NAWS: send terminal size on connect and on resize
-- [ ] Non-blocking read/write using channels between network task and UI
-- [ ] Graceful disconnect and reconnect logic
-- [ ] Connection timeout and error reporting
+- [x] Async runtime integration (`tokio` via `Runtime::block_on`)
+- [x] Raw TCP connection to MUD server
+- [x] Telnet protocol handling (IAC negotiation — ECHO, NAWS, GMCP; all others refused)
+- [x] NAWS: send terminal size on connect and on resize (`Event::Resize`)
+- [x] Non-blocking read/write using channels between network task and UI (`mpsc`)
+- [x] Graceful disconnect and reconnect logic (press `q` in game view returns to selection; server-close detected)
+- [x] Connection timeout and error reporting (15 s timeout, `NetEvent::Disconnected` surfaced)
 
 ## Phase 5: Game View UI
 - [ ] Split-pane layout: scrollable output area + input line
