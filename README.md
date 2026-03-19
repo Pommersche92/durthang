@@ -63,7 +63,7 @@ The project is in its infancy. Issues and pull requests are welcome once the ini
 
 ## License
 
-MIT — see `LICENSE` for details.
+GNU GPL 3.0 — see `LICENSE` for details.
 
 ---
 
