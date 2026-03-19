@@ -432,7 +432,14 @@ async fn connection_loop(
                         }
 
                         if had_prompt {
-                            let _ = tx.send(NetEvent::Prompt(line_buf.clone())).await;
+                            // Strip carriage-return characters before sending: MUME (and many
+                            // MUDs) frequently prefix prompts with \r, which has no meaning in
+                            // our TUI renderer and causes control-character glyphs or visual
+                            // overwrite artifacts.
+                            let prompt_text: String = line_buf.chars()
+                                .filter(|&c| c != '\r')
+                                .collect();
+                            let _ = tx.send(NetEvent::Prompt(prompt_text)).await;
                             line_buf.clear();
                         }
                     }

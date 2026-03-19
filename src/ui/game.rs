@@ -23,6 +23,7 @@ use ratatui::{
 use tracing::warn;
 
 use crate::config::{Alias, Trigger as TriggerCfg};
+use crate::ui::sidebar::{self, SidebarKeyResult, SidebarState};
 
 // ---------------------------------------------------------------------------
 // Public action type
@@ -47,6 +48,8 @@ pub enum GameAction {
     AddTrigger { pattern: String, color: Option<String>, send: Option<String> },
     /// Delete a trigger whose id starts with the given prefix.
     RemoveTrigger(String),
+    /// The sidebar layout was changed and should be persisted to the character config.
+    SaveSidebarLayout,
 }
 
 // ---------------------------------------------------------------------------
@@ -103,6 +106,8 @@ pub struct GameState {
     pub auto_send_queue: Vec<String>,
     /// Whether copy mode is currently active.
     pub copy_mode: bool,
+    /// Sidebar panel state (data + focus + layout).
+    pub sidebar: SidebarState,
 }
 
 impl GameState {
@@ -123,12 +128,15 @@ impl GameState {
             triggers: Vec::new(),
             auto_send_queue: Vec::new(),
             copy_mode: false,
+            sidebar: SidebarState::default(),
         }
     }
 
     /// Parse an ANSI string, apply trigger highlighting, and append to the scrollback buffer.
     /// Any trigger auto-sends are pushed to `auto_send_queue`.
     pub fn push_line(&mut self, s: &str) {
+        // Auto-populate sidebar panels from server output.
+        self.sidebar.process_line(s);
         let mut line = ansi_to_line(s);
         // Apply triggers.
         for trigger in &self.triggers {
@@ -250,6 +258,8 @@ impl GameState {
 
         // Expand aliases.
         let line = self.expand_alias(&raw);
+        // Prime sidebar capture for this command's upcoming output.
+        self.sidebar.on_command_sent(&line);
 
         // Echo into scrollback.
         let echo = Line::from(vec![
@@ -350,6 +360,123 @@ impl GameState {
             "disconnect" | "disc" => Some(GameAction::Disconnect),
             "quit" | "exit"      => Some(GameAction::Quit),
 
+            // ------ Character sheet (/stat) ----------------------------------
+            "stat" => {
+                if args.is_empty() {
+                    if self.sidebar.char_sheet.is_empty() {
+                        self.push_system("Char sheet empty.  Usage: /stat <key> <value>");
+                    } else {
+                        self.push_system("Char sheet:");
+                        let msgs: Vec<String> = self.sidebar.char_sheet.iter()
+                            .map(|(k, v)| format!("  {k}: {v}"))
+                            .collect();
+                        for m in msgs { self.push_system(&m); }
+                    }
+                    None
+                } else if args == "clear" {
+                    self.sidebar.clear_stats();
+                    self.push_system("Char sheet cleared.");
+                    None
+                } else {
+                    match args.split_once(' ') {
+                        None => {
+                            // /stat <key> — show single stat
+                            if let Some((_, v)) = self.sidebar.char_sheet.iter().find(|(k, _)| k == args) {
+                                self.push_system(&format!("{args}: {v}"));
+                            } else {
+                                self.push_system(&format!("Stat '{}' not found.", args));
+                            }
+                            None
+                        }
+                        Some((key, value)) => {
+                            self.sidebar.set_stat(key.to_string(), value.to_string());
+                            self.push_system(&format!("Stat set: {key} = {value}"));
+                            None
+                        }
+                    }
+                }
+            }
+
+            // ------ Paperdoll (/wear) ----------------------------------------
+            "wear" => {
+                if args.is_empty() {
+                    if self.sidebar.paperdoll.is_empty() {
+                        self.push_system("Paperdoll empty.  Usage: /wear <slot> <item> | /wear remove <slot>");
+                    } else {
+                        self.push_system("Paperdoll:");
+                        let msgs: Vec<String> = self.sidebar.paperdoll.iter()
+                            .map(|(s, i)| format!("  {s}: {i}"))
+                            .collect();
+                        for m in msgs { self.push_system(&m); }
+                    }
+                    None
+                } else if let Some(slot) = args.strip_prefix("remove ") {
+                    self.sidebar.remove_wear(slot.trim());
+                    self.push_system(&format!("Removed item from slot '{}'.", slot.trim()));
+                    None
+                } else if args == "clear" {
+                    self.sidebar.clear_paperdoll();
+                    self.push_system("Paperdoll cleared.");
+                    None
+                } else {
+                    match args.split_once(' ') {
+                        None => {
+                            self.push_system("Usage: /wear <slot> <item> | /wear remove <slot> | /wear clear");
+                            None
+                        }
+                        Some((slot, item)) => {
+                            self.sidebar.set_wear(slot.to_string(), item.to_string());
+                            self.push_system(&format!("Wearing '{}' in slot '{}'.", item, slot));
+                            None
+                        }
+                    }
+                }
+            }
+
+            // ------ Inventory (/inv) -----------------------------------------
+            "inv" | "inventory" => {
+                if args.is_empty() {
+                    if self.sidebar.inventory.is_empty() {
+                        self.push_system("Inventory empty.  Usage: /inv add <item> | /inv remove <item> | /inv clear");
+                    } else {
+                        self.push_system("Inventory:");
+                        let msgs: Vec<String> = self.sidebar.inventory.iter()
+                            .enumerate()
+                            .map(|(i, item)| format!("  {}: {}", i + 1, item))
+                            .collect();
+                        for m in msgs { self.push_system(&m); }
+                    }
+                    None
+                } else if let Some(item) = args.strip_prefix("add ") {
+                    self.sidebar.inv_add(item.trim().to_string());
+                    self.push_system(&format!("Added '{}' to inventory.", item.trim()));
+                    None
+                } else if let Some(item) = args.strip_prefix("remove ") {
+                    self.sidebar.inv_remove(item.trim());
+                    self.push_system(&format!("Removed '{}' from inventory.", item.trim()));
+                    None
+                } else if args == "clear" {
+                    self.sidebar.inv_clear();
+                    self.push_system("Inventory cleared.");
+                    None
+                } else {
+                    self.push_system("Usage: /inv [add <item> | remove <item> | clear]");
+                    None
+                }
+            }
+
+            // ------ Sidebar visibility (/sidebar) ----------------------------
+            "sidebar" | "sb" => {
+                match args {
+                    "show"  => { self.sidebar.layout.visible = true; }
+                    "hide"  => { self.sidebar.layout.visible = false; }
+                    _ => { self.sidebar.layout.visible = !self.sidebar.layout.visible; }
+                }
+                let state = if self.sidebar.layout.visible { "shown" } else { "hidden" };
+                self.push_system(&format!("Sidebar {state}."));
+                Some(GameAction::SaveSidebarLayout)
+            }
+
             "alias" | "al" => {
                 if args.is_empty() {
                     if self.aliases.is_empty() {
@@ -435,7 +562,7 @@ impl GameState {
 
             _ => {
                 self.push_system(&format!("Unknown command: {input}"));
-                self.push_system("  Available: /alias, /unalias, /trigger, /disconnect, /quit");
+                self.push_system("  Available: /alias, /unalias, /trigger, /stat, /wear, /inv, /sidebar, /disconnect, /quit");
                 None
             }
         }
@@ -456,17 +583,22 @@ fn ansi_to_line(input: &str) -> Line<'static> {
     let mut i = 0;
 
     while i < input.len() {
-        // Look for ESC [
+        // Look for ESC [  (CSI — Control Sequence Introducer)
         if bytes[i] == b'\x1b' && i + 1 < input.len() && bytes[i + 1] == b'[' {
             // Flush accumulated plain text.
             if text_start < i {
                 spans.push(Span::styled(input[text_start..i].to_string(), style));
             }
 
-            // Find the end of the escape sequence (the first ASCII letter).
+            // Find the end of the escape sequence.
+            // Per ANSI X3.64 the final byte is in the range 0x40–0x7E ('@'–'~').
+            // Parameter/intermediate bytes (0x20–0x3F) precede it; scanning for
+            // the first byte ≥ 0x40 gives us the correct split even for sequences
+            // with intermediate bytes like `\x1b[>4l` (params ">4", final "l").
             let seq_start = i + 2;
-            let seq_end = input[seq_start..]
-                .find(|c: char| c.is_ascii_alphabetic())
+            let seq_end = bytes[seq_start..]
+                .iter()
+                .position(|&b| (0x40..=0x7E).contains(&b))
                 .map(|j| seq_start + j)
                 .unwrap_or(input.len());
 
@@ -476,19 +608,32 @@ fn ansi_to_line(input: &str) -> Line<'static> {
                 if terminator == b'm' {
                     style = apply_sgr(style, params);
                 }
-                // All other escape sequences (cursor movement, etc.) are silently skipped.
+                // All other escape sequences (cursor movement, mode switches, etc.)
+                // are silently skipped.
                 i = seq_end + 1;
             } else {
-                // Unterminated sequence — skip to end.
+                // Unterminated sequence — skip to end of this chunk.
                 i = input.len();
             }
             text_start = i;
         } else if bytes[i] == b'\x1b' {
-            // Lone ESC (not CSI) — skip it.
+            // Non-CSI ESC sequence (no '[' after ESC).
+            // These are always terminal control sequences, never printable text.
+            // Skip the ESC plus its payload:
+            //   - ESC <single byte>          (e.g. ESC= ESC> ESC7 ESC8)
+            //   - ESC ( X  ESC ) X  etc.    (G0/G1 charset designation, 3 bytes total)
             if text_start < i {
                 spans.push(Span::styled(input[text_start..i].to_string(), style));
             }
-            i += 1;
+            i += 1; // skip ESC
+            if i < bytes.len() {
+                let next = bytes[i];
+                i += 1; // skip the byte immediately after ESC
+                // Charset-designation sequences have one additional designator byte.
+                if matches!(next, b'(' | b')' | b'*' | b'+') && i < bytes.len() {
+                    i += 1; // skip the charset code (e.g. 'B', '0', 'U', …)
+                }
+            }
             text_start = i;
         } else {
             // Advance by one UTF-8 character.
@@ -630,6 +775,30 @@ fn apply_sgr(mut style: Style, params: &str) -> Style {
 pub fn handle_key(state: &mut GameState, key: KeyEvent) -> Option<GameAction> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
+    // F1 — always returns focus to the game input.
+    if key.code == KeyCode::F(1) {
+        state.sidebar.active_panel = None;
+        return None;
+    }
+
+    // F2–F5 — select and focus a sidebar panel.
+    if let KeyCode::F(n) = key.code {
+        if (2..=5).contains(&n) {
+            let idx = (n - 2) as usize;
+            if let Some(panel) = state.sidebar.panel_for_fkey(idx).cloned() {
+                if state.sidebar.active_panel.as_ref() == Some(&panel) {
+                    // Pressing the same key again removes focus.
+                    state.sidebar.active_panel = None;
+                } else {
+                    state.sidebar.layout.visible = true;
+                    state.sidebar.active_panel = Some(panel);
+                    state.sidebar.panel_cursor = 0;
+                }
+            }
+            return None;
+        }
+    }
+
     // Ctrl+Q — disconnect and return to the selection screen.
     if ctrl && key.code == KeyCode::Char('q') {
         return Some(GameAction::Disconnect);
@@ -638,6 +807,16 @@ pub fn handle_key(state: &mut GameState, key: KeyEvent) -> Option<GameAction> {
     // In copy mode most keys have different bindings.
     if state.copy_mode {
         return handle_copy_mode(state, key);
+    }
+
+    // When a sidebar panel is focused, route input there.
+    if state.sidebar.active_panel.is_some() {
+        return match sidebar::handle_sidebar_key(&mut state.sidebar, key) {
+            SidebarKeyResult::FocusGame  => { state.sidebar.active_panel = None; None }
+            SidebarKeyResult::SaveLayout => Some(GameAction::SaveSidebarLayout),
+            SidebarKeyResult::SendLine(cmd) => Some(GameAction::SendLine(cmd)),
+            SidebarKeyResult::Consumed | SidebarKeyResult::Unhandled => None,
+        };
     }
 
     match key.code {
@@ -875,13 +1054,36 @@ fn find_kv(s: &str, key: &str) -> Option<usize> {
 pub fn draw(frame: &mut Frame, state: &mut GameState, server_name: &str, char_name: &str) {
     let area = frame.area();
 
-    // Split: [output area | input line (1 row) | status bar (1 row)]
-    let [output_area, input_area, status_area] = Layout::vertical([
+    // Top-level vertical split: [content area | status bar (1 row)]
+    let [content_area, status_area] = Layout::vertical([
         Constraint::Fill(1),
-        Constraint::Length(1),
         Constraint::Length(1),
     ])
     .areas(area);
+
+    // Horizontal split: game column + optional sidebar column.
+    let sidebar_w = if state.sidebar.is_visible() {
+        state.sidebar.width().min(content_area.width.saturating_sub(20))
+    } else {
+        0
+    };
+    let (game_col, sidebar_col_opt) = if sidebar_w > 0 {
+        let chunks = Layout::horizontal([
+            Constraint::Fill(1),
+            Constraint::Length(sidebar_w),
+        ])
+        .split(content_area);
+        (chunks[0], Some(chunks[1]))
+    } else {
+        (content_area, None)
+    };
+
+    // Game column: [output area | input line (1 row)]
+    let [output_area, input_area] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(1),
+    ])
+    .areas(game_col);
 
     // The bordered output block consumes 2 rows for its borders.
     let output_inner_h = output_area.height.saturating_sub(2) as usize;
@@ -980,6 +1182,11 @@ pub fn draw(frame: &mut Frame, state: &mut GameState, server_name: &str, char_na
     ]);
     frame.render_widget(Paragraph::new(input_line), input_area);
 
+    // --- Sidebar ---
+    if let Some(sa) = sidebar_col_opt {
+        sidebar::draw(frame, &state.sidebar, sa);
+    }
+
     // --- Status bar ---
     let conn_icon = if state.connected {
         Span::styled("● ", Style::default().fg(Color::Green))
@@ -992,7 +1199,7 @@ pub fn draw(frame: &mut Frame, state: &mut GameState, server_name: &str, char_na
     };
     let info = format!(
         "{server_name}  /  {char_name}{lat_str}   \
-         \u{2191}\u{2193} history   PgUp/PgDn scroll   Ctrl+Y copy   Ctrl+Q disconnect"
+         \u{2191}\u{2193} hist   PgUp/Dn scroll   Ctrl+Y copy   Ctrl+Q disc   F1-F5 panels"
     );
     let status_line = Line::from(vec![conn_icon, Span::raw(info)]);
     frame.render_widget(

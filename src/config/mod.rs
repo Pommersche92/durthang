@@ -52,6 +52,76 @@ impl Trigger {
 }
 
 // ---------------------------------------------------------------------------
+// Sidebar layout
+// ---------------------------------------------------------------------------
+
+/// Identifies one of the sidebar panels.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PanelKind {
+    CharSheet,
+    Paperdoll,
+    Inventory,
+    Automap,
+}
+
+impl PanelKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            PanelKind::CharSheet => "Character Sheet",
+            PanelKind::Paperdoll => "Paperdoll",
+            PanelKind::Inventory => "Inventory",
+            PanelKind::Automap   => "Automap",
+        }
+    }
+
+    /// Short label used in the sidebar tab bar.
+    pub fn short_label(&self) -> &'static str {
+        match self {
+            PanelKind::CharSheet => "Stats",
+            PanelKind::Paperdoll => "Wear",
+            PanelKind::Inventory => "Inv",
+            PanelKind::Automap   => "Map",
+        }
+    }
+}
+
+fn default_sidebar_visible() -> bool { true }
+fn default_sidebar_width()   -> u16  { 30 }
+fn default_sidebar_panels()  -> Vec<PanelKind> {
+    vec![
+        PanelKind::CharSheet,
+        PanelKind::Paperdoll,
+        PanelKind::Inventory,
+        PanelKind::Automap,
+    ]
+}
+
+/// Per-character sidebar layout persisted in the config file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SidebarLayout {
+    /// Whether the sidebar is shown.
+    #[serde(default = "default_sidebar_visible")]
+    pub visible: bool,
+    /// Width of the sidebar column in terminal characters.
+    #[serde(default = "default_sidebar_width")]
+    pub width: u16,
+    /// Panels in display order; the N-th entry is bound to F(N+2).
+    #[serde(default = "default_sidebar_panels")]
+    pub panels: Vec<PanelKind>,
+}
+
+impl Default for SidebarLayout {
+    fn default() -> Self {
+        Self {
+            visible: true,
+            width: 30,
+            panels: default_sidebar_panels(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Data model
 // ---------------------------------------------------------------------------
 
@@ -106,6 +176,9 @@ pub struct Character {
     /// Trigger rules stored per character.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub triggers: Vec<Trigger>,
+    /// Sidebar layout for this character.
+    #[serde(default)]
+    pub sidebar: SidebarLayout,
 }
 
 impl Character {
@@ -119,6 +192,7 @@ impl Character {
             notes: None,
             aliases: Vec::new(),
             triggers: Vec::new(),
+            sidebar: SidebarLayout::default(),
         }
     }
 

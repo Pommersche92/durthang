@@ -50,14 +50,14 @@
 - [x] Mouse support (optional, scroll wheel for scrollback)
 
 ## Phase 7: Sidebars
-- [ ] Implement sidebar panel system with visibility toggle (show/hide per panel)
-  - [ ] Character sheet panel (stats, vitals populated via GMCP or triggers)
-  - [ ] Paperdoll panel (equipped items, equip/unequip keybinds when panel is focused)
-  - [ ] Inventory panel (item list, equip/unequip/drop keybinds when panel is focused)
-  - [ ] Automap panel (live map widget, see Phase 8)
-- [ ] F-Key focus system: each sidebar panel is bound to an F-Key (F2–F5 --> F1 is Game input/output); pressing the key activates the panel and switches the input context to its local keybind set
-- [ ] Per-character layout configuration (which panels are visible, their order and width) stored persistently in config
-- [ ] Options screen (per character) for configuring the sidebar layout
+- [x] Implement sidebar panel system with visibility toggle (show/hide per panel)
+  - [x] Character sheet panel (stats, vitals populated via GMCP or triggers)
+  - [x] Paperdoll panel (equipped items, equip/unequip keybinds when panel is focused)
+  - [x] Inventory panel (item list, equip/unequip/drop keybinds when panel is focused)
+  - [x] Automap panel (live map widget, see Phase 8)
+- [x] F-Key focus system: each sidebar panel is bound to an F-Key (F2–F5 --> F1 is Game input/output); pressing the key activates the panel and switches the input context to its local keybind set
+- [x] Per-character layout configuration (which panels are visible, their order and width) stored persistently in config
+- [x] Options screen (per character) for configuring the sidebar layout
 
 ## Phase 8: Automap
 - [ ] Define internal map data model (`Room`: id, name, exits `HashMap<Direction, RoomId>`, coordinates)

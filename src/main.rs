@@ -211,6 +211,9 @@ async fn run_loop(app: &mut App, terminal: &mut Terminal<CrosstermBackend<io::St
                             Some(GameAction::RemoveTrigger(id_prefix)) => {
                                 game_remove_trigger(app, id_prefix);
                             }
+                            Some(GameAction::SaveSidebarLayout) => {
+                                save_sidebar_layout(app);
+                            }
                             None => {}
                         }
                         // Drain any trigger-generated auto-sends.
@@ -320,11 +323,12 @@ async fn do_connect(app: &mut App, server_id: &str, char_id: Option<&str>) {
     app.game = crate::ui::game::GameState::new();
     app.game.on_connect();
 
-    // Load aliases and triggers for this character.
+    // Load aliases, triggers, and sidebar layout for this character.
     if let Some(cid) = &app.connected_char_id {
         if let Some(ch) = app.config.characters.iter().find(|c| &c.id == cid) {
             app.game.set_aliases(ch.aliases.clone());
             app.game.set_triggers(ch.triggers.clone());
+            app.game.sidebar = crate::ui::sidebar::SidebarState::new(ch.sidebar.clone());
         }
     }
 
@@ -339,6 +343,14 @@ fn save_config_quiet(app: &App) {
     if let Err(e) = app.config.save(&app.config_path) {
         tracing::warn!("Failed to save config: {e}");
     }
+}
+
+fn save_sidebar_layout(app: &mut App) {
+    let Some(cid) = app.connected_char_id.clone() else { return };
+    if let Some(ch) = app.config.characters.iter_mut().find(|c| c.id == cid) {
+        ch.sidebar = app.game.sidebar.layout.clone();
+    }
+    save_config_quiet(app);
 }
 
 fn game_add_alias(app: &mut App, name: String, expansion: String) {
