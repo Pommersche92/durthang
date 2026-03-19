@@ -3,7 +3,7 @@
 > *"Durthang (Sauron's castle) loomed dark and tall before them."*
 > — J.R.R. Tolkien, *The Return of the King*
 
-**Durthang** is a modern, terminal-based MUD client written in Rust, named after the brooding fortress in Mordor. Like its namesake, it is built to endure — fast, lean, and uncompromising.
+**Durthang** is a modern, terminal-based MUD client written in Rust, named after thes fortress in Mordor. Like its namesake, it is built to endure — fast, lean, and uncompromising.
 
 ## Features (planned)
 
