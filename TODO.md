@@ -49,7 +49,17 @@
 - [ ] Copy mode (scroll through output and copy text to clipboard)
 - [ ] Mouse support (optional, scroll wheel for scrollback)
 
-## Phase 7: Automap
+## Phase 7: Sidebars
+- [ ] Implement sidebar panel system with visibility toggle (show/hide per panel)
+  - [ ] Character sheet panel (stats, vitals populated via GMCP or triggers)
+  - [ ] Paperdoll panel (equipped items, equip/unequip keybinds when panel is focused)
+  - [ ] Inventory panel (item list, equip/unequip/drop keybinds when panel is focused)
+  - [ ] Automap panel (live map widget, see Phase 8)
+- [ ] F-Key focus system: each sidebar panel is bound to an F-Key (F2–F5 --> F1 is Game input/output); pressing the key activates the panel and switches the input context to its local keybind set
+- [ ] Per-character layout configuration (which panels are visible, their order and width) stored persistently in config
+- [ ] Options screen (per character) for configuring the sidebar layout
+
+## Phase 8: Automap
 - [ ] Define internal map data model (`Room`: id, name, exits `HashMap<Direction, RoomId>`, coordinates)
 - [ ] GMCP `Room.Info` parser to auto-create rooms on arrival
 - [ ] Fallback: heuristic room detection from output text (regex on "Exits:" lines)
@@ -58,7 +68,7 @@
 - [ ] Save/load map per server to a file (`~/.local/share/durthang/<server>.map.json`)
 - [ ] Map export to image or plain-text grid (stretch goal)
 
-## Phase 8: Polish & Distribution
+## Phase 9: Polish & Distribution
 - [ ] Full keyboard shortcut help screen (`?`)
 - [ ] Theming / colour scheme config
 - [ ] Man page / `--help` output
