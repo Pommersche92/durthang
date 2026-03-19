@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use crate::config::Config;
 use crate::net::Connection;
+use crate::ui::game::GameState;
 use crate::ui::selection::SelectState;
 
 /// Top-level application state machine.
@@ -27,6 +28,8 @@ pub struct App {
     pub connected_server: Option<String>,
     /// Display name of the currently connected character.
     pub connected_char: Option<String>,
+    /// Game view state (scrollback, input, history, …).
+    pub game: GameState,
 }
 
 impl App {
@@ -40,6 +43,7 @@ impl App {
             connection: None,
             connected_server: None,
             connected_char: None,
+            game: GameState::new(),
         }
     }
 

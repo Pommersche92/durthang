@@ -34,13 +34,13 @@
 - [x] Connection timeout and error reporting (15 s timeout, `NetEvent::Disconnected` surfaced)
 
 ## Phase 5: Game View UI
-- [ ] Split-pane layout: scrollable output area + input line
-- [ ] ANSI/VT100 colour code rendering via ratatui `Line`/`Span` with styles
-- [ ] Scrollback buffer (configurable size, e.g. 5 000 lines)
-- [ ] Input history (up/down arrow recall, like a shell)
-- [ ] Word-wrap of output lines respecting terminal width
-- [ ] Status bar: server name, character, connection state, latency
-- [ ] Resize handling (redraw on `SIGWINCH`)
+- [x] Split-pane layout: scrollable output area + input line
+- [x] ANSI/VT100 colour code rendering via ratatui `Line`/`Span` with styles
+- [x] Scrollback buffer (configurable size, e.g. 5 000 lines)
+- [x] Input history (up/down arrow recall, like a shell)
+- [x] Word-wrap of output lines respecting terminal width
+- [x] Status bar: server name, character, connection state, latency
+- [x] Resize handling (redraw on `SIGWINCH`)
 
 ## Phase 6: Quality-of-Life Features
 - [ ] Alias system (map short commands to full strings, stored per character)

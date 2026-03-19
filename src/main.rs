@@ -117,18 +117,9 @@ async fn run_loop(app: &mut App, terminal: &mut Terminal<CrosstermBackend<io::St
             .draw(|frame| match app.state {
                 AppState::ServerSelect => ui::selection::draw(frame, &app.select, &app.config),
                 AppState::Game => {
-                    // Phase 5: game view
-                    let area = frame.area();
-                    let status = format!(
-                        " Connected to {}  —  {}  (Phase 5: game view coming soon)  q to disconnect",
-                        app.connected_server.as_deref().unwrap_or("?"),
-                        app.connected_char.as_deref().unwrap_or("?"),
-                    );
-                    use ratatui::widgets::{Block, Paragraph};
-                    frame.render_widget(
-                        Paragraph::new(status).block(Block::bordered().title("Durthang")),
-                        area,
-                    );
+                    let server = app.connected_server.as_deref().unwrap_or("?");
+                    let character = app.connected_char.as_deref().unwrap_or("?");
+                    ui::game::draw(frame, &mut app.game, server, character);
                 }
             })
             .expect("terminal draw failed");
@@ -173,15 +164,22 @@ async fn run_loop(app: &mut App, terminal: &mut Terminal<CrosstermBackend<io::St
                         }
                     }
                     AppState::Game => {
-                        match key.code {
-                            KeyCode::Char('q') => {
-                                if let Some(conn) = &app.connection {
-                                    conn.disconnect().await;
-                                }
-                                app.connection = None;
-                                app.state = AppState::ServerSelect;
+                        // Ctrl+Q disconnects gracefully.
+                        if key.modifiers.contains(KeyModifiers::CONTROL)
+                            && key.code == KeyCode::Char('q')
+                        {
+                            if let Some(conn) = &app.connection {
+                                conn.disconnect().await;
                             }
-                            _ => { /* Phase 5: forward to game input handler */ }
+                            app.connection = None;
+                            app.game.on_disconnect();
+                            app.state = AppState::ServerSelect;
+                        } else if let Some(line) =
+                            ui::game::handle_key(&mut app.game, key)
+                        {
+                            if let Some(conn) = &app.connection {
+                                conn.send_line(line).await;
+                            }
                         }
                     }
                 }
@@ -205,28 +203,32 @@ fn drain_net_events(app: &mut App) {
         None => return,
     };
 
-    // try_recv in a loop — non-blocking.
     loop {
         match conn.rx.try_recv() {
             Ok(NetEvent::Line(line)) => {
-                // Phase 5 will append these to a scrollback buffer.
-                // For now just log.
                 info!(target: "game", "{line}");
+                app.game.push_line(&line);
             }
-            Ok(NetEvent::Prompt(_)) => {
-                // Phase 5: render prompt in the input line.
+            Ok(NetEvent::Prompt(prompt)) => {
+                app.game.push_prompt(&prompt);
             }
             Ok(NetEvent::Connected) => {
                 info!("Network: connected");
+                app.game.on_connect();
             }
             Ok(NetEvent::Disconnected(reason)) => {
                 tracing::warn!("Disconnected: {reason}");
+                let msg = format!("\x1b[33m-- Disconnected: {reason} --\x1b[0m");
+                app.game.push_line(&msg);
+                app.game.on_disconnect();
                 app.connection = None;
                 app.state = AppState::ServerSelect;
                 break;
             }
-            Ok(NetEvent::Latency(_)) => {}
-            Err(_) => break, // channel empty or closed
+            Ok(NetEvent::Latency(ms)) => {
+                app.game.latency = Some(ms);
+            }
+            Err(_) => break,
         }
     }
 }
@@ -266,6 +268,9 @@ async fn do_connect(app: &mut App, server_id: &str, char_id: Option<&str>) {
     app.connection = Some(conn);
     app.connected_server = Some(server.name.clone());
     app.connected_char = Some(char_name);
+    // Clear the game view for the new session and mark as connected.
+    app.game = crate::ui::game::GameState::new();
+    app.game.on_connect();
     app.state = AppState::Game;
 }
 
