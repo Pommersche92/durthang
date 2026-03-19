@@ -27,6 +27,11 @@ Early development. See [TODO.md](TODO.md) for the full roadmap.
 
 - Rust toolchain (stable, 1.80+): <https://rustup.rs>
 
+> **FreeBSD / OpenBSD:** Password storage relies on the [Secret Service API](https://specifications.freedesktop.org/secret-service/latest/) via D-Bus.
+> You need a running Secret Service daemon — either **GNOME Keyring** (`gnome-keyring-daemon`) or **KWallet**.
+> Install the relevant package for your desktop environment and make sure the daemon is started before launching Durthang.
+> On a headless system without D-Bus the application will still start, but saving passwords will fail with a runtime error.
+
 ### Build & run
 
 ```bash

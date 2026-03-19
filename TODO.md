@@ -1,11 +1,11 @@
 # Durthang — MUD Client Roadmap
 
 ## Phase 1: Project Foundation
-- [ ] Define module structure (`ui/`, `net/`, `config/`, `map/`)
-- [ ] Choose and integrate a persistent config format (TOML via `serde` + `toml`)
-- [ ] Decide on secure credential storage strategy (e.g. `keyring` crate or encrypted file)
-- [ ] Set up basic application state machine (`AppState` enum: `ServerSelect`, `Game`, …)
-- [ ] Add logging (`tracing` + `tracing-subscriber` writing to a log file)
+- [x] Define module structure (`ui/`, `net/`, `config/`, `map/`)
+- [x] Choose and integrate a persistent config format (TOML via `serde` + `toml`)
+- [x] Decide on secure credential storage strategy (`keyring` crate — secrets stored in OS keyring, never in TOML)
+- [x] Set up basic application state machine (`AppState` enum: `ServerSelect`, `Game`, …)
+- [x] Add logging (`tracing` + `tracing-subscriber` writing to `~/.local/share/durthang/durthang.log`)
 
 ## Phase 2: Configuration & Data Model
 - [ ] Define data model for servers (`Server`: name, host, port, notes)
