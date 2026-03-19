@@ -22,6 +22,9 @@ pub struct Server {
     pub name: String,
     pub host: String,
     pub port: u16,
+    /// Whether to use TLS for this server connection.
+    #[serde(default)]
+    pub tls: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
 }
@@ -33,6 +36,7 @@ impl Server {
             name: name.into(),
             host: host.into(),
             port,
+            tls: false,
             notes: None,
         }
     }

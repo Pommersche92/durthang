@@ -129,6 +129,7 @@ impl Dialog {
                 DialogField::plain("Name"),
                 DialogField::plain("Host"),
                 DialogField::prefilled("Port", "23"),
+                DialogField::prefilled("TLS (y/n)", "n"),
             ],
             focused: 0,
         })
@@ -143,6 +144,7 @@ impl Dialog {
                     DialogField::prefilled("Name", &s.name),
                     DialogField::prefilled("Host", &s.host),
                     DialogField::prefilled("Port", s.port.to_string()),
+                    DialogField::prefilled("TLS (y/n)", if s.tls { "y" } else { "n" }),
                 ],
                 focused: 0,
             },
@@ -353,8 +355,10 @@ fn handle_dialog_key(
                 let name = d.fields[0].value.trim().to_string();
                 let host = d.fields[1].value.trim().to_string();
                 let port = d.fields[2].value.trim().parse::<u16>().unwrap_or(23);
+                let tls  = matches!(d.fields[3].value.trim().to_lowercase().as_str(), "y" | "yes" | "true" | "1");
                 if !name.is_empty() && !host.is_empty() {
-                    let server = Server::new(name, host, port);
+                    let mut server = Server::new(name, host, port);
+                    server.tls = tls;
                     let sid = server.id.clone();
                     config.servers.push(server);
                     save_config(config, config_path);
@@ -373,10 +377,12 @@ fn handle_dialog_key(
                     let name = d.fields[0].value.trim().to_string();
                     let host = d.fields[1].value.trim().to_string();
                     let port = d.fields[2].value.trim().parse::<u16>().unwrap_or(23);
+                    let tls  = matches!(d.fields[3].value.trim().to_lowercase().as_str(), "y" | "yes" | "true" | "1");
                     if let Some(s) = config.servers.iter_mut().find(|s| s.id == server_id) {
                         if !name.is_empty() { s.name = name; }
                         if !host.is_empty() { s.host = host; }
                         if port > 0 { s.port = port; }
+                        s.tls = tls;
                     }
                     save_config(config, config_path);
                     true
@@ -630,8 +636,19 @@ fn draw_tree(frame: &mut Frame, area: Rect, state: &SelectState, config: &Config
     } else {
         tree.iter()
             .map(|row| match row {
-                TreeRow::Server { name, collapsed, char_count, .. } => {
+                TreeRow::Server { name, collapsed, char_count, server_id, .. } => {
                     let icon = if *collapsed { "▶ " } else { "▼ " };
+                    let tls_badge = if config
+                        .servers
+                        .iter()
+                        .find(|s| &s.id == server_id)
+                        .map(|s| s.tls)
+                        .unwrap_or(false)
+                    {
+                        " [TLS]"
+                    } else {
+                        ""
+                    };
                     let suffix = if *collapsed {
                         format!("  [{char_count}]")
                     } else {
@@ -640,6 +657,7 @@ fn draw_tree(frame: &mut Frame, area: Rect, state: &SelectState, config: &Config
                     ListItem::new(Line::from(vec![
                         Span::styled(icon, Style::default().fg(Color::Yellow)),
                         Span::styled(name.clone(), Style::default().add_modifier(Modifier::BOLD)),
+                        Span::styled(tls_badge, Style::default().fg(Color::Green)),
                         Span::styled(suffix, Style::default().fg(Color::DarkGray)),
                     ]))
                 }

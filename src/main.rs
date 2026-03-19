@@ -246,11 +246,24 @@ async fn do_connect(app: &mut App, server_id: &str, char_id: Option<&str>) {
         }
     };
 
-    let char_name = if let Some(cid) = char_id {
+    // Resolve character name and auto-login credentials.
+    let (char_name, auto_login) = if let Some(cid) = char_id {
         match app.config.characters.iter().find(|c| c.id == cid) {
             Some(c) => {
                 info!("Connecting to {} ({}) as {}", server.name, server.host, c.name);
-                c.name.clone()
+                let login = c.effective_login().to_string();
+                // Try to fetch stored password; auto-login fires even without one
+                // (only the login name will be typed automatically in that case).
+                let password = config::get_password(&server.id, &login)
+                    .unwrap_or(None);
+                // Trigger auto-login whenever login info was explicitly configured
+                // (separate login field) OR a password is stored in the keyring.
+                let auto_login = if c.login.is_some() || password.is_some() {
+                    Some((login, password))
+                } else {
+                    None
+                };
+                (c.name.clone(), auto_login)
             }
             None => {
                 tracing::warn!("Connect: char_id {cid} not found in config");
@@ -259,11 +272,11 @@ async fn do_connect(app: &mut App, server_id: &str, char_id: Option<&str>) {
         }
     } else {
         info!("Connecting to {} ({}) without a saved character", server.name, server.host);
-        String::from("(anonymous)")
+        (String::from("(anonymous)"), None)
     };
 
     let size = terminal_size();
-    let conn = Connection::spawn(server.host.clone(), server.port, size);
+    let conn = Connection::spawn(server.host.clone(), server.port, server.tls, auto_login, size);
 
     app.connection = Some(conn);
     app.connected_server = Some(server.name.clone());

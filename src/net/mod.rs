@@ -9,10 +9,16 @@
 //!   - Telnet IAC bytes are stripped / negotiated before forwarding to the UI.
 //!   - NAWS: terminal size is sent on connect and whenever the UI notifies a
 //!     resize via `Connection::send_naws()`.
+//!   - TLS: when `tls = true` the plain TCP stream is wrapped with rustls after
+//!     the TCP handshake completes. System root certificates are loaded via
+//!     `rustls-native-certs`.
+//!   - Auto-login: when `auto_login = Some((login, password))` is given the
+//!     task sends the login on the first server prompt and the password on the
+//!     second prompt.
 //!   - The task gracefully shuts down when either the TCP stream closes or the
 //!     UI drops its end of the channel.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use bytes::BytesMut;
 use tokio::{
@@ -20,6 +26,10 @@ use tokio::{
     net::TcpStream,
     sync::mpsc,
     time::timeout,
+};
+use tokio_rustls::{
+    rustls::{self, ClientConfig, RootCertStore},
+    TlsConnector,
 };
 use tracing::{debug, error, info, warn};
 
@@ -88,14 +98,22 @@ pub struct Connection {
 impl Connection {
     /// Spawn the network task and return a `Connection` handle.
     ///
-    /// The task connects to `host:port`, negotiates Telnet, and bridges
-    /// reads/writes via the two channels.
-    pub fn spawn(host: String, port: u16, initial_size: (u16, u16)) -> Self {
+    /// - `tls`: wrap the TCP stream with TLS (rustls + system root certs).
+    /// - `auto_login`: when `Some((login, opt_password))`, the task automatically
+    ///   sends `login` on the first server output and `password` (if `Some`) on
+    ///   the first prompt that follows.
+    pub fn spawn(
+        host: String,
+        port: u16,
+        tls: bool,
+        auto_login: Option<(String, Option<String>)>,
+        initial_size: (u16, u16),
+    ) -> Self {
         let (net_tx, net_rx) = mpsc::channel::<NetEvent>(256);
         let (ui_tx, ui_rx) = mpsc::channel::<UiEvent>(64);
 
         tokio::spawn(async move {
-            run_connection(host, port, initial_size, net_tx, ui_rx).await;
+            run_connection(host, port, tls, auto_login, initial_size, net_tx, ui_rx).await;
         });
 
         Connection { rx: net_rx, tx: ui_tx }
@@ -230,18 +248,43 @@ fn parse_telnet(buf: &[u8], responses: &mut Vec<u8>) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// TLS helper
+// ---------------------------------------------------------------------------
+
+/// Perform a TLS handshake over an existing TCP stream.
+async fn connect_tls(
+    stream: TcpStream,
+    host: &str,
+) -> Result<tokio_rustls::client::TlsStream<TcpStream>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut root_store = RootCertStore::empty();
+    let certs = rustls_native_certs::load_native_certs();
+    for cert in certs.certs {
+        // Ignore errors from individual untrusted/malformed system certs.
+        let _ = root_store.add(cert);
+    }
+    let config = ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+    let connector = TlsConnector::from(Arc::new(config));
+    let domain = rustls::pki_types::ServerName::try_from(host.to_string())?;
+    Ok(connector.connect(domain, stream).await?)
+}
+
+// ---------------------------------------------------------------------------
 // Connection task
 // ---------------------------------------------------------------------------
 
 async fn run_connection(
     host: String,
     port: u16,
+    tls: bool,
+    auto_login: Option<(String, Option<String>)>,
     initial_size: (u16, u16),
     tx: mpsc::Sender<NetEvent>,
-    mut ui_rx: mpsc::Receiver<UiEvent>,
+    ui_rx: mpsc::Receiver<UiEvent>,
 ) {
     let addr = format!("{host}:{port}");
-    info!("Connecting to {addr}");
+    info!("Connecting to {addr} (tls={tls})");
 
     let stream = match timeout(CONNECT_TIMEOUT, TcpStream::connect(&addr)).await {
         Ok(Ok(s)) => s,
@@ -257,10 +300,58 @@ async fn run_connection(
         }
     };
 
-    info!("Connected to {addr}");
-    let _ = tx.send(NetEvent::Connected).await;
+    info!("TCP connected to {addr}");
 
-    let (mut reader, mut writer) = stream.into_split();
+    if tls {
+        match connect_tls(stream, &host).await {
+            Ok(tls_stream) => {
+                info!("TLS handshake successful for {host}");
+                let (r, w) = tokio::io::split(tls_stream);
+                connection_loop(
+                    Box::new(r) as _,
+                    Box::new(w) as _,
+                    initial_size,
+                    tx,
+                    ui_rx,
+                    auto_login,
+                )
+                .await;
+            }
+            Err(e) => {
+                error!("TLS handshake failed: {e}");
+                let _ = tx.send(NetEvent::Disconnected(format!("TLS error: {e}"))).await;
+            }
+        }
+    } else {
+        let (r, w) = stream.into_split();
+        connection_loop(
+            Box::new(r) as _,
+            Box::new(w) as _,
+            initial_size,
+            tx,
+            ui_rx,
+            auto_login,
+        )
+        .await;
+    }
+}
+
+/// Core read/write loop — shared between plain-TCP and TLS connections.
+///
+/// Auto-login:
+///   Step 0 → fires on the FIRST server output (any line or prompt) → sends login.
+///   Step 1 → fires on the next PROMPT (partial line, no \n) → sends password if stored.
+/// Using "first output" for login covers both MUDs that send a prompt without \n
+/// and those that send the login line with \n.
+async fn connection_loop(
+    mut reader: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
+    mut writer: Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
+    initial_size: (u16, u16),
+    tx: mpsc::Sender<NetEvent>,
+    mut ui_rx: mpsc::Receiver<UiEvent>,
+    auto_login: Option<(String, Option<String>)>,
+) {
+    let _ = tx.send(NetEvent::Connected).await;
 
     // Send initial NAWS.
     let naws = naws_packet(initial_size.0, initial_size.1);
@@ -270,9 +361,12 @@ async fn run_connection(
 
     let mut read_buf = BytesMut::with_capacity(4096);
     let mut line_buf = String::new();
+    // 0 = send login on first server output (line or prompt)
+    // 1 = send password on next PROMPT
+    // 2 = done
+    let mut auto_login_step: u8 = if auto_login.is_some() { 0 } else { 2 };
 
     loop {
-        // We need to either receive data from the server or a command from the UI.
         tokio::select! {
             // Server → UI
             result = reader.read_buf(&mut read_buf) => {
@@ -296,13 +390,48 @@ async fn run_connection(
 
                         // Split into lines; partial trailing content → Prompt.
                         line_buf.push_str(&text);
+                        let mut had_complete_lines = false;
                         while let Some(pos) = line_buf.find('\n') {
+                            had_complete_lines = true;
                             let line: String = line_buf.drain(..=pos).collect();
                             let line = line.trim_end_matches('\n').trim_end_matches('\r').to_string();
                             let _ = tx.send(NetEvent::Line(line)).await;
                         }
-                        // Whatever remains is a prompt (no newline yet).
-                        if !line_buf.is_empty() {
+                        let had_prompt = !line_buf.is_empty();
+
+                        // Auto-login state machine.
+                        // Step 0: fire on ANY first server output (line or prompt).
+                        if auto_login_step == 0 && (had_complete_lines || had_prompt) {
+                            if let Some((ref login, _)) = auto_login {
+                                info!("Auto-login: sending login name");
+                                auto_login_step = 1;
+                                let mut data = login.as_bytes().to_vec();
+                                data.extend_from_slice(b"\r\n");
+                                if let Err(e) = writer.write_all(&data).await {
+                                    error!("Auto-login write error: {e}");
+                                    let _ = tx.send(NetEvent::Disconnected(e.to_string())).await;
+                                    break;
+                                }
+                            }
+                        // Step 1: fire only on a PROMPT – wait for the actual password prompt.
+                        } else if auto_login_step == 1 && had_prompt {
+                            if let Some((_, Some(ref password))) = auto_login {
+                                info!("Auto-login: sending password");
+                                auto_login_step = 2;
+                                let mut data = password.as_bytes().to_vec();
+                                data.extend_from_slice(b"\r\n");
+                                if let Err(e) = writer.write_all(&data).await {
+                                    error!("Auto-login password write error: {e}");
+                                    let _ = tx.send(NetEvent::Disconnected(e.to_string())).await;
+                                    break;
+                                }
+                            } else {
+                                // No stored password – user will type it manually.
+                                auto_login_step = 2;
+                            }
+                        }
+
+                        if had_prompt {
                             let _ = tx.send(NetEvent::Prompt(line_buf.clone())).await;
                             line_buf.clear();
                         }
