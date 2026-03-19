@@ -86,37 +86,70 @@ impl PanelKind {
     }
 }
 
-fn default_sidebar_visible() -> bool { true }
-fn default_sidebar_width()   -> u16  { 30 }
-fn default_sidebar_panels()  -> Vec<PanelKind> {
+/// Which sidebar column a panel is assigned to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SidebarSide {
+    Left,
+    Right,
+}
+
+/// Per-panel configuration: sidebar assignment and relative height.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PanelConfig {
+    pub kind: PanelKind,
+    /// Which sidebar column.  `None` = not displayed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side: Option<SidebarSide>,
+    /// Relative height expressed as a percentage (1–100).
+    /// Panels that share a sidebar column have their values normalised to fill it.
+    #[serde(default = "default_panel_height_pct")]
+    pub height_pct: u8,
+}
+
+fn default_panel_height_pct() -> u8  { 50 }
+fn default_left_visible()    -> bool { true }
+fn default_right_visible()   -> bool { true }
+fn default_left_width()      -> u16  { 26 }
+fn default_right_width()     -> u16  { 26 }
+
+fn default_panels() -> Vec<PanelConfig> {
     vec![
-        PanelKind::CharSheet,
-        PanelKind::Paperdoll,
-        PanelKind::Inventory,
-        PanelKind::Automap,
+        PanelConfig { kind: PanelKind::CharSheet, side: Some(SidebarSide::Left),  height_pct: 40  },
+        PanelConfig { kind: PanelKind::Paperdoll, side: Some(SidebarSide::Left),  height_pct: 60  },
+        PanelConfig { kind: PanelKind::Inventory, side: Some(SidebarSide::Right), height_pct: 100 },
+        PanelConfig { kind: PanelKind::Automap,   side: None,                     height_pct: 100 },
     ]
 }
 
 /// Per-character sidebar layout persisted in the config file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SidebarLayout {
-    /// Whether the sidebar is shown.
-    #[serde(default = "default_sidebar_visible")]
-    pub visible: bool,
-    /// Width of the sidebar column in terminal characters.
-    #[serde(default = "default_sidebar_width")]
-    pub width: u16,
-    /// Panels in display order; the N-th entry is bound to F(N+2).
-    #[serde(default = "default_sidebar_panels")]
-    pub panels: Vec<PanelKind>,
+    /// Whether the left sidebar column is shown.
+    #[serde(default = "default_left_visible")]
+    pub left_visible: bool,
+    /// Width of the left sidebar column in terminal characters.
+    #[serde(default = "default_left_width")]
+    pub left_width: u16,
+    /// Whether the right sidebar column is shown.
+    #[serde(default = "default_right_visible")]
+    pub right_visible: bool,
+    /// Width of the right sidebar column in terminal characters.
+    #[serde(default = "default_right_width")]
+    pub right_width: u16,
+    /// Panel configurations (kind, side assignment, relative height).
+    #[serde(default = "default_panels")]
+    pub panels: Vec<PanelConfig>,
 }
 
 impl Default for SidebarLayout {
     fn default() -> Self {
         Self {
-            visible: true,
-            width: 30,
-            panels: default_sidebar_panels(),
+            left_visible:  true,
+            left_width:    26,
+            right_visible: true,
+            right_width:   26,
+            panels: default_panels(),
         }
     }
 }

@@ -18,7 +18,7 @@ use ratatui::{
 };
 use regex::Regex;
 
-use crate::config::{PanelKind, SidebarLayout};
+use crate::config::{PanelConfig, PanelKind, SidebarLayout, SidebarSide};
 
 // ---------------------------------------------------------------------------
 // Key result
@@ -165,8 +165,8 @@ fn strip_ansi(s: &str) -> String {
 pub struct SidebarState {
     /// Layout configuration (panels order, width, visibility).
     pub layout: SidebarLayout,
-    /// Which panel is currently focused.  `None` → game has focus.
-    pub active_panel: Option<PanelKind>,
+    /// Which panel currently has keyboard focus.  `None` → game has focus.
+    pub focused_panel: Option<PanelKind>,
     /// Whether the options overlay is open.
     pub options_open: bool,
 
@@ -201,7 +201,7 @@ impl SidebarState {
     pub fn new(layout: SidebarLayout) -> Self {
         Self {
             layout,
-            active_panel: None,
+            focused_panel: None,
             options_open: false,
             char_sheet: Vec::new(),
             paperdoll: Vec::new(),
@@ -213,19 +213,79 @@ impl SidebarState {
         }
     }
 
-    /// Whether the sidebar column should be rendered.
-    pub fn is_visible(&self) -> bool {
-        self.layout.visible
+    /// Returns `true` if any panel is assigned to the given sidebar side.
+    pub fn has_side_panels(&self, side: &SidebarSide) -> bool {
+        self.layout.panels.iter().any(|p| p.side.as_ref() == Some(side))
     }
 
-    /// Preferred width of the sidebar column (unclamped).
-    pub fn width(&self) -> u16 {
-        self.layout.width
+    /// Toggles left sidebar visibility (no-op when no panels are assigned).
+    /// Returns `true` if the layout actually changed.
+    pub fn toggle_left(&mut self) -> bool {
+        if self.has_side_panels(&SidebarSide::Left) {
+            self.layout.left_visible = !self.layout.left_visible;
+            if !self.layout.left_visible {
+                if let Some(fp) = &self.focused_panel {
+                    let on_left = self.layout.panels.iter()
+                        .any(|p| p.kind == *fp && p.side == Some(SidebarSide::Left));
+                    if on_left { self.focused_panel = None; }
+                }
+            }
+            true
+        } else {
+            false
+        }
     }
 
-    /// Return the panel bound to the given F-key index (0-based: F2 → 0, F3 → 1, …).
-    pub fn panel_for_fkey(&self, idx: usize) -> Option<&PanelKind> {
-        self.layout.panels.get(idx)
+    /// Toggles right sidebar visibility (no-op when no panels are assigned).
+    /// Returns `true` if the layout actually changed.
+    pub fn toggle_right(&mut self) -> bool {
+        if self.has_side_panels(&SidebarSide::Right) {
+            self.layout.right_visible = !self.layout.right_visible;
+            if !self.layout.right_visible {
+                if let Some(fp) = &self.focused_panel {
+                    let on_right = self.layout.panels.iter()
+                        .any(|p| p.kind == *fp && p.side == Some(SidebarSide::Right));
+                    if on_right { self.focused_panel = None; }
+                }
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Cycles keyboard focus to the next visible panel (wraps; `None` → first).
+    /// Resets `panel_cursor` to 0 whenever focus changes.
+    pub fn focus_next_panel(&mut self) {
+        let visible: Vec<PanelKind> = self.layout.panels.iter()
+            .filter(|p| match &p.side {
+                Some(SidebarSide::Left)  => self.layout.left_visible,
+                Some(SidebarSide::Right) => self.layout.right_visible,
+                None => false,
+            })
+            .map(|p| p.kind.clone())
+            .collect();
+
+        if visible.is_empty() {
+            self.focused_panel = None;
+            return;
+        }
+
+        let next = match &self.focused_panel {
+            None => visible.into_iter().next(),
+            Some(cur) => {
+                let pos = visible.iter().position(|k| k == cur);
+                match pos {
+                    None    => visible.into_iter().next(),
+                    Some(i) => {
+                        let next_i = (i + 1) % visible.len();
+                        visible.into_iter().nth(next_i)
+                    }
+                }
+            }
+        };
+        self.focused_panel = next;
+        self.panel_cursor  = 0;
     }
 
     // ------------------------------------------------------------------
@@ -449,7 +509,7 @@ impl SidebarState {
     }
 
     fn active_panel_len(&self) -> usize {
-        match &self.active_panel {
+        match &self.focused_panel {
             Some(PanelKind::CharSheet) => self.char_sheet.len(),
             Some(PanelKind::Paperdoll) => self.paperdoll.len(),
             Some(PanelKind::Inventory) => self.inventory.len(),
@@ -475,14 +535,20 @@ pub fn handle_sidebar_key(state: &mut SidebarState, key: KeyEvent) -> SidebarKey
         // Return focus to game.
         KeyCode::Esc | KeyCode::F(1) => SidebarKeyResult::FocusGame,
 
+        // Cycle focus to the next visible panel.
+        KeyCode::Tab => {
+            state.focus_next_panel();
+            SidebarKeyResult::Consumed
+        }
+
         // Open options overlay.
         KeyCode::Char('o') => {
-            state.options_open  = true;
+            state.options_open   = true;
             state.options_cursor = 0;
             SidebarKeyResult::Consumed
         }
 
-        // Scroll within the panel list.
+        // Scroll within the focused panel list.
         KeyCode::Up => {
             if state.panel_cursor > 0 {
                 state.panel_cursor -= 1;
@@ -496,9 +562,9 @@ pub fn handle_sidebar_key(state: &mut SidebarState, key: KeyEvent) -> SidebarKey
             SidebarKeyResult::Consumed
         }
 
-        // Paperdoll: Remove/unequip selected item (Enter or 'r').
+        // Paperdoll: Remove/unequip selected item (Enter or ‘r’).
         KeyCode::Enter | KeyCode::Char('r')
-            if matches!(state.active_panel, Some(PanelKind::Paperdoll)) =>
+            if matches!(state.focused_panel, Some(PanelKind::Paperdoll)) =>
         {
             if let Some((slot, _)) = state.paperdoll.get(state.panel_cursor) {
                 return SidebarKeyResult::SendLine(format!("remove {slot}"));
@@ -506,9 +572,9 @@ pub fn handle_sidebar_key(state: &mut SidebarState, key: KeyEvent) -> SidebarKey
             SidebarKeyResult::Consumed
         }
 
-        // Inventory: Wear/equip selected item ('w' or Enter).
+        // Inventory: Wear/equip selected item (‘w’ or Enter).
         KeyCode::Enter | KeyCode::Char('w')
-            if matches!(state.active_panel, Some(PanelKind::Inventory)) =>
+            if matches!(state.focused_panel, Some(PanelKind::Inventory)) =>
         {
             if let Some(item) = state.inventory.get(state.panel_cursor) {
                 return SidebarKeyResult::SendLine(format!("wear {item}"));
@@ -516,9 +582,9 @@ pub fn handle_sidebar_key(state: &mut SidebarState, key: KeyEvent) -> SidebarKey
             SidebarKeyResult::Consumed
         }
 
-        // Inventory: Drop selected item ('d').
+        // Inventory: Drop selected item (‘d’).
         KeyCode::Char('d')
-            if matches!(state.active_panel, Some(PanelKind::Inventory)) =>
+            if matches!(state.focused_panel, Some(PanelKind::Inventory)) =>
         {
             if let Some(item) = state.inventory.get(state.panel_cursor) {
                 return SidebarKeyResult::SendLine(format!("drop {item}"));
@@ -531,9 +597,9 @@ pub fn handle_sidebar_key(state: &mut SidebarState, key: KeyEvent) -> SidebarKey
 }
 
 fn handle_options_key(state: &mut SidebarState, key: KeyEvent) -> SidebarKeyResult {
-    let panel_count = state.layout.panels.len();
-    // Rows: 0..panel_count = panel entries, panel_count = width row, panel_count+1 = close
-    let n_items = panel_count + 2;
+    let n_panels = state.layout.panels.len();
+    // Rows: 0..n_panels = panels, n_panels = left width, n_panels+1 = right width, n_panels+2 = close
+    let n_rows = n_panels + 3;
 
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => {
@@ -541,54 +607,83 @@ fn handle_options_key(state: &mut SidebarState, key: KeyEvent) -> SidebarKeyResu
             SidebarKeyResult::SaveLayout
         }
         KeyCode::Up => {
-            if state.options_cursor > 0 {
-                state.options_cursor -= 1;
-            }
+            if state.options_cursor > 0 { state.options_cursor -= 1; }
             SidebarKeyResult::Consumed
         }
         KeyCode::Down => {
-            if state.options_cursor + 1 < n_items {
-                state.options_cursor += 1;
-            }
+            if state.options_cursor + 1 < n_rows { state.options_cursor += 1; }
             SidebarKeyResult::Consumed
         }
         KeyCode::Enter | KeyCode::Char(' ') => {
-            let close_row = panel_count + 1;
-            if state.options_cursor == close_row {
+            if state.options_cursor == n_panels + 2 {
                 state.options_open = false;
                 return SidebarKeyResult::SaveLayout;
             }
             SidebarKeyResult::Consumed
         }
-        // Right / '+' — reorder panel (higher F-key) OR increase width.
-        KeyCode::Right | KeyCode::Char('+') => {
+        // → on panel row: cycle side assignment (None → Left → Right → None).
+        // → on width rows: increase width.
+        KeyCode::Right => {
             let i = state.options_cursor;
-            if i < panel_count {
-                if i + 1 < panel_count {
-                    state.layout.panels.swap(i, i + 1);
-                    state.options_cursor += 1;
-                    return SidebarKeyResult::SaveLayout;
-                }
-            } else if i == panel_count && state.layout.width < 60 {
-                state.layout.width += 1;
-                return SidebarKeyResult::SaveLayout;
+            if i < n_panels {
+                let p = &mut state.layout.panels[i];
+                p.side = match &p.side {
+                    None                     => Some(SidebarSide::Left),
+                    Some(SidebarSide::Left)  => Some(SidebarSide::Right),
+                    Some(SidebarSide::Right) => None,
+                };
+                SidebarKeyResult::SaveLayout
+            } else if i == n_panels && state.layout.left_width < 60 {
+                state.layout.left_width += 1;
+                SidebarKeyResult::SaveLayout
+            } else if i == n_panels + 1 && state.layout.right_width < 60 {
+                state.layout.right_width += 1;
+                SidebarKeyResult::SaveLayout
+            } else {
+                SidebarKeyResult::Consumed
             }
-            SidebarKeyResult::Consumed
         }
-        // Left / '-' — reorder panel (lower F-key) OR decrease width.
-        KeyCode::Left | KeyCode::Char('-') => {
+        // ← on panel row: cycle side assignment backwards.
+        // ← on width rows: decrease width.
+        KeyCode::Left => {
             let i = state.options_cursor;
-            if i < panel_count {
-                if i > 0 {
-                    state.layout.panels.swap(i, i - 1);
-                    state.options_cursor -= 1;
-                    return SidebarKeyResult::SaveLayout;
-                }
-            } else if i == panel_count && state.layout.width > 15 {
-                state.layout.width -= 1;
-                return SidebarKeyResult::SaveLayout;
+            if i < n_panels {
+                let p = &mut state.layout.panels[i];
+                p.side = match &p.side {
+                    None                     => Some(SidebarSide::Right),
+                    Some(SidebarSide::Right) => Some(SidebarSide::Left),
+                    Some(SidebarSide::Left)  => None,
+                };
+                SidebarKeyResult::SaveLayout
+            } else if i == n_panels && state.layout.left_width > 12 {
+                state.layout.left_width -= 1;
+                SidebarKeyResult::SaveLayout
+            } else if i == n_panels + 1 && state.layout.right_width > 12 {
+                state.layout.right_width -= 1;
+                SidebarKeyResult::SaveLayout
+            } else {
+                SidebarKeyResult::Consumed
             }
-            SidebarKeyResult::Consumed
+        }
+        // +/= on panel row: increase height share.
+        KeyCode::Char('+') | KeyCode::Char('=') => {
+            if state.options_cursor < n_panels {
+                let h = &mut state.layout.panels[state.options_cursor].height_pct;
+                *h = (*h).saturating_add(5).min(100);
+                SidebarKeyResult::SaveLayout
+            } else {
+                SidebarKeyResult::Consumed
+            }
+        }
+        // - on panel row: decrease height share.
+        KeyCode::Char('-') => {
+            if state.options_cursor < n_panels {
+                let h = &mut state.layout.panels[state.options_cursor].height_pct;
+                *h = (*h).saturating_sub(5).max(5);
+                SidebarKeyResult::SaveLayout
+            } else {
+                SidebarKeyResult::Consumed
+            }
         }
         _ => SidebarKeyResult::Unhandled,
     }
@@ -598,96 +693,78 @@ fn handle_options_key(state: &mut SidebarState, key: KeyEvent) -> SidebarKeyResu
 // Drawing
 // ---------------------------------------------------------------------------
 
-/// Render the sidebar into `area`.  The caller is responsible for ensuring
-/// `area` is only passed when the sidebar is visible.
-pub fn draw(frame: &mut Frame, state: &SidebarState, area: Rect) {
-    if area.height < 3 {
+/// Render both sidebar columns and the options modal (if open).
+/// `term_area` is the full terminal rectangle, used to center the options modal.
+pub fn draw(
+    frame: &mut Frame,
+    state: &SidebarState,
+    term_area: Rect,
+    left_area: Option<Rect>,
+    right_area: Option<Rect>,
+) {
+    if let Some(area) = left_area {
+        draw_sidebar_col(frame, state, area, &SidebarSide::Left);
+    }
+    if let Some(area) = right_area {
+        draw_sidebar_col(frame, state, area, &SidebarSide::Right);
+    }
+    if state.options_open {
+        draw_options_modal(frame, state, term_area);
+    }
+}
+
+/// Render all panels assigned to `side` stacked vertically inside `area`.
+/// Heights are allocated proportionally to each panel's `height_pct`.
+fn draw_sidebar_col(frame: &mut Frame, state: &SidebarState, area: Rect, side: &SidebarSide) {
+    let panels: Vec<&PanelConfig> = state.layout.panels.iter()
+        .filter(|p| p.side.as_ref() == Some(side))
+        .collect();
+
+    if panels.is_empty() || area.height < 2 {
         return;
     }
 
-    // Tab bar: 1 row.  Panel content: remainder.
-    let tab_area = Rect { x: area.x, y: area.y, width: area.width, height: 1 };
-    let content_area = Rect {
-        x: area.x,
-        y: area.y + 1,
-        width: area.width,
-        height: area.height.saturating_sub(1),
-    };
+    let total_pct: u32 = panels.iter().map(|p| p.height_pct as u32).sum::<u32>().max(1);
+    let avail_h   = area.height;
+    let mut y     = area.y;
 
-    draw_tabs(frame, state, tab_area);
+    for (i, pc) in panels.iter().enumerate() {
+        let is_last  = i == panels.len() - 1;
+        let panel_h: u16 = if is_last {
+            (area.y + avail_h).saturating_sub(y)
+        } else {
+            ((avail_h as u32 * pc.height_pct as u32) / total_pct) as u16
+        };
+        if panel_h == 0 { continue; }
+        if y + panel_h > area.y + avail_h { break; }
 
-    // Display the active panel when focused, otherwise the char sheet as default.
-    let panel  = state.active_panel.as_ref().unwrap_or(&PanelKind::CharSheet);
-    let focused = state.active_panel.is_some();
+        let panel_area = Rect { x: area.x, y, width: area.width, height: panel_h };
+        y += panel_h;
 
-    match panel {
+        let focused = state.focused_panel.as_ref() == Some(&pc.kind);
+        draw_panel(frame, state, &pc.kind, panel_area, focused);
+    }
+}
+
+fn draw_panel(frame: &mut Frame, state: &SidebarState, kind: &PanelKind, area: Rect, focused: bool) {
+    match kind {
         PanelKind::CharSheet => draw_kv_panel(
-            frame, "Char Sheet",
+            frame, "Character Sheet",
             &state.char_sheet.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect::<Vec<_>>(),
-            state.panel_cursor,
-            content_area,
-            focused,
-            Some("r:remove"),
+            state.panel_cursor, area, focused, Some("r:remove"),
         ),
         PanelKind::Paperdoll => draw_kv_panel(
             frame, "Paperdoll",
             &state.paperdoll.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect::<Vec<_>>(),
-            state.panel_cursor,
-            content_area,
-            focused,
-            Some("Enter/r:remove"),
+            state.panel_cursor, area, focused, Some("Enter/r:remove"),
         ),
         PanelKind::Inventory => draw_list_panel(
             frame, "Inventory",
             &state.inventory.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-            state.panel_cursor,
-            content_area,
-            focused,
-            Some("Enter/w:wear  d:drop"),
+            state.panel_cursor, area, focused, Some("Enter/w:wear  d:drop"),
         ),
-        PanelKind::Automap => draw_placeholder(
-            frame,
-            "Automap\n\n(Phase 8)",
-            content_area,
-        ),
+        PanelKind::Automap => draw_placeholder(frame, "Automap\n\n(Phase 8)", area),
     }
-
-    if state.options_open {
-        draw_options_modal(frame, state, area);
-    }
-}
-
-fn draw_tabs(frame: &mut Frame, state: &SidebarState, area: Rect) {
-    let mut spans: Vec<Span> = Vec::new();
-    // F1 hint (game).
-    let f1_style = if state.active_panel.is_none() {
-        Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::DarkGray).bg(Color::DarkGray)
-    };
-    spans.push(Span::styled("F1", f1_style));
-    spans.push(Span::styled("|", Style::default().fg(Color::DarkGray).bg(Color::DarkGray)));
-
-    for (i, panel) in state.layout.panels.iter().enumerate() {
-        let fkey = i + 2;
-        let active = state.active_panel.as_ref() == Some(panel);
-        let style = if active {
-            Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Gray).bg(Color::DarkGray)
-        };
-        spans.push(Span::styled(format!("F{}:{}", fkey, panel.short_label()), style));
-        spans.push(Span::styled("|", Style::default().fg(Color::DarkGray).bg(Color::DarkGray)));
-    }
-    if state.active_panel.is_some() {
-        spans.push(Span::styled("o:opts", Style::default().fg(Color::DarkGray).bg(Color::DarkGray)));
-    }
-
-    frame.render_widget(
-        Paragraph::new(Line::from(spans))
-            .style(Style::default().bg(Color::DarkGray)),
-        area,
-    );
 }
 
 fn draw_kv_panel(
@@ -831,10 +908,10 @@ fn draw_placeholder(frame: &mut Frame, text: &str, area: Rect) {
 }
 
 fn draw_options_modal(frame: &mut Frame, state: &SidebarState, parent: Rect) {
-    let panel_count = state.layout.panels.len();
-    // rows: panel_count panel entries + 1 separator + 1 width + 1 close + 2 borders
-    let modal_h = (panel_count as u16 + 5).min(parent.height);
-    let modal_w = parent.width.min(34).max(20);
+    let n_panels = state.layout.panels.len();
+    // rows: n_panels + separator + left_w + right_w + close + 2 borders
+    let modal_h: u16 = (n_panels as u16 + 6).min(parent.height);
+    let modal_w: u16 = parent.width.min(46).max(28);
     let x = parent.x + parent.width.saturating_sub(modal_w) / 2;
     let y = parent.y + parent.height.saturating_sub(modal_h) / 2;
     let modal_area = Rect { x, y, width: modal_w, height: modal_h };
@@ -854,56 +931,65 @@ fn draw_options_modal(frame: &mut Frame, state: &SidebarState, parent: Rect) {
 
     let mut lines: Vec<Line> = Vec::new();
 
-    // Panel rows.
-    for (i, panel) in state.layout.panels.iter().enumerate() {
-        let fkey = i + 2;
-        let selected = state.options_cursor == i;
-        let sel_style = if selected {
+    // --- Panel rows ---
+    for (i, pc) in state.layout.panels.iter().enumerate() {
+        let selected  = state.options_cursor == i;
+        let row_style = if selected {
             Style::default().bg(Color::White).fg(Color::Black)
         } else {
             Style::default()
         };
-        let hint = if selected { " \u{2190}\u{2192} reorder" } else { "" };
+        let side_str = match &pc.side {
+            None                     => " -- ",
+            Some(SidebarSide::Left)  => "Left",
+            Some(SidebarSide::Right) => " Rt ",
+        };
+        let h_str = if pc.side.is_some() {
+            format!("{:3}%", pc.height_pct)
+        } else {
+            "    ".to_string()
+        };
+        let hint = if selected { "  \u{2190}\u{2192}:side  +/-:h%" } else { "" };
         lines.push(Line::from(vec![
-            Span::styled(format!(" F{fkey} "), Style::default().fg(Color::Yellow)),
-            Span::styled(format!("{:<8}", panel.short_label()), sel_style),
+            Span::styled(format!("{:<8} ", pc.kind.short_label()), row_style.add_modifier(Modifier::BOLD)),
+            Span::styled(format!("[{side_str}]"), row_style),
+            Span::styled(format!(" {h_str}"), row_style),
             Span::styled(hint, Style::default().fg(Color::DarkGray)),
         ]));
     }
 
-    // Separator.
+    // Separator
     lines.push(Line::from(Span::styled(
         "\u{2500}".repeat(inner.width as usize),
         Style::default().fg(Color::DarkGray),
     )));
 
-    // Width row.
-    let w_sel = state.options_cursor == panel_count;
-    let w_style = if w_sel {
-        Style::default().bg(Color::White).fg(Color::Black)
-    } else {
-        Style::default()
-    };
+    // Left width row
+    let lw_sel   = state.options_cursor == n_panels;
+    let lw_style = if lw_sel { Style::default().bg(Color::White).fg(Color::Black) } else { Style::default() };
     lines.push(Line::from(vec![
-        Span::styled(" Width ", Style::default().fg(Color::Yellow)),
-        Span::styled(format!("{:>3}", state.layout.width), w_style),
-        Span::styled(
-            if w_sel { "  \u{2190}\u{2192} adjust" } else { "" },
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled("Left  w ", Style::default().fg(Color::Cyan)),
+        Span::styled(format!("{:>3}", state.layout.left_width), lw_style),
+        Span::styled(if lw_sel { "  \u{2190}\u{2192} adjust" } else { "" }, Style::default().fg(Color::DarkGray)),
     ]));
 
-    // Close row.
-    let c_sel   = state.options_cursor == panel_count + 1;
+    // Right width row
+    let rw_sel   = state.options_cursor == n_panels + 1;
+    let rw_style = if rw_sel { Style::default().bg(Color::White).fg(Color::Black) } else { Style::default() };
+    lines.push(Line::from(vec![
+        Span::styled("Right w ", Style::default().fg(Color::Cyan)),
+        Span::styled(format!("{:>3}", state.layout.right_width), rw_style),
+        Span::styled(if rw_sel { "  \u{2190}\u{2192} adjust" } else { "" }, Style::default().fg(Color::DarkGray)),
+    ]));
+
+    // Close row
+    let c_sel   = state.options_cursor == n_panels + 2;
     let c_style = if c_sel {
         Style::default().bg(Color::Yellow).fg(Color::Black)
     } else {
         Style::default().fg(Color::DarkGray)
     };
-    lines.push(Line::from(Span::styled(
-        " [Close]  Esc to save & close",
-        c_style,
-    )));
+    lines.push(Line::from(Span::styled(" [Close]  Esc to save & close", c_style)));
 
     frame.render_widget(Paragraph::new(lines), inner);
 }

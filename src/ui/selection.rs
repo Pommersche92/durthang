@@ -717,7 +717,7 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, dialog: &Option<Dialog>) {
         Some(Dialog::ConfirmDelete { .. }) => " y yes   n / Esc no",
         Some(_) => " Tab/↑↓ next field   Enter confirm   Esc cancel",
     };
-    let p = Paragraph::new(hints).style(Style::default().bg(Color::DarkGray).fg(Color::White));
+    let p = Paragraph::new(hints).style(Style::default().add_modifier(Modifier::REVERSED));
     frame.render_widget(p, area);
 }
 

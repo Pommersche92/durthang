@@ -22,7 +22,7 @@ use ratatui::{
 };
 use tracing::warn;
 
-use crate::config::{Alias, Trigger as TriggerCfg};
+use crate::config::{Alias, SidebarSide, Trigger as TriggerCfg};
 use crate::ui::sidebar::{self, SidebarKeyResult, SidebarState};
 
 // ---------------------------------------------------------------------------
@@ -468,13 +468,25 @@ impl GameState {
             // ------ Sidebar visibility (/sidebar) ----------------------------
             "sidebar" | "sb" => {
                 match args {
-                    "show"  => { self.sidebar.layout.visible = true; }
-                    "hide"  => { self.sidebar.layout.visible = false; }
-                    _ => { self.sidebar.layout.visible = !self.sidebar.layout.visible; }
+                    "left" | "l" => {
+                        self.sidebar.toggle_left();
+                        let st = if self.sidebar.layout.left_visible { "shown" } else { "hidden" };
+                        self.push_system(&format!("Left sidebar {st}."));
+                        Some(GameAction::SaveSidebarLayout)
+                    }
+                    "right" | "r" => {
+                        self.sidebar.toggle_right();
+                        let st = if self.sidebar.layout.right_visible { "shown" } else { "hidden" };
+                        self.push_system(&format!("Right sidebar {st}."));
+                        Some(GameAction::SaveSidebarLayout)
+                    }
+                    _ => {
+                        let l = if self.sidebar.layout.left_visible { "shown" } else { "hidden" };
+                        let r = if self.sidebar.layout.right_visible { "shown" } else { "hidden" };
+                        self.push_system(&format!("Left: {l}  Right: {r}   /sidebar left|right to toggle"));
+                        None
+                    }
                 }
-                let state = if self.sidebar.layout.visible { "shown" } else { "hidden" };
-                self.push_system(&format!("Sidebar {state}."));
-                Some(GameAction::SaveSidebarLayout)
             }
 
             "alias" | "al" => {
@@ -775,27 +787,32 @@ fn apply_sgr(mut style: Style, params: &str) -> Style {
 pub fn handle_key(state: &mut GameState, key: KeyEvent) -> Option<GameAction> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
-    // F1 — always returns focus to the game input.
+    // F1 — return keyboard focus to the game input.
     if key.code == KeyCode::F(1) {
-        state.sidebar.active_panel = None;
+        state.sidebar.focused_panel = None;
         return None;
     }
 
-    // F2–F5 — select and focus a sidebar panel.
+    // F-key sidebar controls.
     if let KeyCode::F(n) = key.code {
-        if (2..=5).contains(&n) {
-            let idx = (n - 2) as usize;
-            if let Some(panel) = state.sidebar.panel_for_fkey(idx).cloned() {
-                if state.sidebar.active_panel.as_ref() == Some(&panel) {
-                    // Pressing the same key again removes focus.
-                    state.sidebar.active_panel = None;
-                } else {
-                    state.sidebar.layout.visible = true;
-                    state.sidebar.active_panel = Some(panel);
-                    state.sidebar.panel_cursor = 0;
+        match n {
+            2 => {
+                if state.sidebar.toggle_left() {
+                    return Some(GameAction::SaveSidebarLayout);
                 }
+                return None;
             }
-            return None;
+            3 => {
+                if state.sidebar.toggle_right() {
+                    return Some(GameAction::SaveSidebarLayout);
+                }
+                return None;
+            }
+            4 => {
+                state.sidebar.focus_next_panel();
+                return None;
+            }
+            _ => return None,
         }
     }
 
@@ -810,9 +827,9 @@ pub fn handle_key(state: &mut GameState, key: KeyEvent) -> Option<GameAction> {
     }
 
     // When a sidebar panel is focused, route input there.
-    if state.sidebar.active_panel.is_some() {
+    if state.sidebar.focused_panel.is_some() {
         return match sidebar::handle_sidebar_key(&mut state.sidebar, key) {
-            SidebarKeyResult::FocusGame  => { state.sidebar.active_panel = None; None }
+            SidebarKeyResult::FocusGame  => { state.sidebar.focused_panel = None; None }
             SidebarKeyResult::SaveLayout => Some(GameAction::SaveSidebarLayout),
             SidebarKeyResult::SendLine(cmd) => Some(GameAction::SendLine(cmd)),
             SidebarKeyResult::Consumed | SidebarKeyResult::Unhandled => None,
@@ -1061,21 +1078,46 @@ pub fn draw(frame: &mut Frame, state: &mut GameState, server_name: &str, char_na
     ])
     .areas(area);
 
-    // Horizontal split: game column + optional sidebar column.
-    let sidebar_w = if state.sidebar.is_visible() {
-        state.sidebar.width().min(content_area.width.saturating_sub(20))
-    } else {
-        0
-    };
-    let (game_col, sidebar_col_opt) = if sidebar_w > 0 {
-        let chunks = Layout::horizontal([
-            Constraint::Fill(1),
-            Constraint::Length(sidebar_w),
-        ])
-        .split(content_area);
-        (chunks[0], Some(chunks[1]))
-    } else {
-        (content_area, None)
+    // Horizontal split: optional left sidebar | game column | optional right sidebar.
+    let has_left  = state.sidebar.has_side_panels(&SidebarSide::Left);
+    let has_right = state.sidebar.has_side_panels(&SidebarSide::Right);
+    let show_left  = has_left  && state.sidebar.layout.left_visible;
+    let show_right = has_right && state.sidebar.layout.right_visible;
+
+    const MIN_GAME_W: u16 = 20;
+    let left_w = if show_left {
+        state.sidebar.layout.left_width
+            .min(content_area.width.saturating_sub(MIN_GAME_W))
+    } else { 0 };
+    let right_w = if show_right {
+        state.sidebar.layout.right_width
+            .min(content_area.width.saturating_sub(left_w + MIN_GAME_W))
+    } else { 0 };
+
+    let (left_area_opt, game_col, right_area_opt) = match (left_w > 0, right_w > 0) {
+        (true, true) => {
+            let c = Layout::horizontal([
+                Constraint::Length(left_w),
+                Constraint::Fill(1),
+                Constraint::Length(right_w),
+            ]).split(content_area);
+            (Some(c[0]), c[1], Some(c[2]))
+        }
+        (true, false) => {
+            let c = Layout::horizontal([
+                Constraint::Length(left_w),
+                Constraint::Fill(1),
+            ]).split(content_area);
+            (Some(c[0]), c[1], None)
+        }
+        (false, true) => {
+            let c = Layout::horizontal([
+                Constraint::Fill(1),
+                Constraint::Length(right_w),
+            ]).split(content_area);
+            (None, c[0], Some(c[1]))
+        }
+        (false, false) => (None, content_area, None),
     };
 
     // Game column: [output area | input line (1 row)]
@@ -1182,29 +1224,28 @@ pub fn draw(frame: &mut Frame, state: &mut GameState, server_name: &str, char_na
     ]);
     frame.render_widget(Paragraph::new(input_line), input_area);
 
-    // --- Sidebar ---
-    if let Some(sa) = sidebar_col_opt {
-        sidebar::draw(frame, &state.sidebar, sa);
-    }
+    // --- Sidebars ---
+    sidebar::draw(frame, &state.sidebar, area, left_area_opt, right_area_opt);
 
     // --- Status bar ---
     let conn_icon = if state.connected {
-        Span::styled("● ", Style::default().fg(Color::Green))
+        Span::styled("● ", Style::default().fg(Color::Green).add_modifier(Modifier::REVERSED))
     } else {
-        Span::styled("○ disconnected  ", Style::default().fg(Color::Red))
+        Span::styled("○ ", Style::default().fg(Color::Red).add_modifier(Modifier::REVERSED))
     };
     let lat_str = match state.latency {
         Some(ms) => format!("  lat {ms}ms"),
         None => String::new(),
     };
+    let disc_hint = if !state.connected { "  disconnected" } else { "" };
     let info = format!(
-        "{server_name}  /  {char_name}{lat_str}   \
-         \u{2191}\u{2193} hist   PgUp/Dn scroll   Ctrl+Y copy   Ctrl+Q disc   F1-F5 panels"
+        "{server_name}  /  {char_name}{lat_str}{disc_hint}   \
+         \u{2191}\u{2193} hist   PgUp/Dn scroll   Ctrl+Y copy   Ctrl+Q disc   F2/F3:sidebars  F4:panel"
     );
     let status_line = Line::from(vec![conn_icon, Span::raw(info)]);
     frame.render_widget(
         Paragraph::new(status_line)
-            .style(Style::default().bg(Color::DarkGray).fg(Color::White)),
+            .style(Style::default().add_modifier(Modifier::REVERSED)),
         status_area,
     );
 }
