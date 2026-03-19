@@ -8,11 +8,11 @@
 - [x] Add logging (`tracing` + `tracing-subscriber` writing to `~/.local/share/durthang/durthang.log`)
 
 ## Phase 2: Configuration & Data Model
-- [ ] Define data model for servers (`Server`: name, host, port, notes)
-- [ ] Define data model for characters (`Character`: name, server_id, optional password hint)
-- [ ] Implement save/load of config file (`~/.config/durthang/config.toml` or XDG)
-- [ ] Implement secure password storage (OS keyring or AES-encrypted vault with master password)
-- [ ] CLI argument parsing for `--config` path override (`clap`)
+- [x] Define data model for servers (`Server`: name, host, port, notes)
+- [x] Define data model for characters (`Character`: name, server_id, optional password hint)
+- [x] Implement save/load of config file (`~/.config/durthang/config.toml` or XDG)
+- [x] Implement secure password storage (OS keyring via `keyring` crate — `store_password` / `get_password` / `delete_password`)
+- [x] CLI argument parsing for `--config` path override (`clap`)
 
 ## Phase 3: Server/Character Selection UI
 - [ ] Implement a two-panel tree-view widget

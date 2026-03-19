@@ -5,6 +5,8 @@ mod net;
 mod ui;
 
 use app::App;
+use clap::Parser;
+use config::Config;
 use crossterm::{
     event::{self, Event, KeyCode},
     execute,
@@ -16,6 +18,20 @@ use ratatui::{
 };
 use std::{fs, io, path::PathBuf, sync::Mutex};
 use tracing::info;
+
+// ---------------------------------------------------------------------------
+// CLI
+// ---------------------------------------------------------------------------
+
+#[derive(Parser)]
+#[command(version, about = "Durthang — a terminal MUD client")]
+struct Cli {
+    /// Path to the configuration file.
+    /// Defaults to $XDG_CONFIG_HOME/durthang/config.toml
+    /// (typically ~/.config/durthang/config.toml).
+    #[arg(long, value_name = "FILE")]
+    config: Option<PathBuf>,
+}
 
 /// Returns the XDG data directory for durthang (`~/.local/share/durthang`).
 fn data_dir() -> PathBuf {
@@ -46,8 +62,17 @@ fn init_logging() -> io::Result<()> {
 }
 
 fn main() -> io::Result<()> {
+    let cli = Cli::parse();
+    let config_path = cli.config.unwrap_or_else(Config::default_path);
+
     init_logging()?;
     info!("Durthang starting up");
+    info!("Using config file: {}", config_path.display());
+
+    let _config = Config::load(&config_path).unwrap_or_else(|e| {
+        tracing::warn!("Could not load config from {}: {e}", config_path.display());
+        Config::default()
+    });
 
     let mut app = App::new();
 
