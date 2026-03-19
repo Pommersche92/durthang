@@ -15,14 +15,14 @@
 - [x] CLI argument parsing for `--config` path override (`clap`)
 
 ## Phase 3: Server/Character Selection UI
-- [ ] Implement a two-panel tree-view widget
-  - [ ] Top panel: list of servers (expandable/collapsible)
-  - [ ] Bottom panel: characters belonging to the selected server
-- [ ] Keyboard navigation (arrow keys, Enter to connect, `n` to add new, `d` to delete, `e` to edit)
-- [ ] Add/edit server dialog (name, host, port)
-- [ ] Add/edit character dialog (name, password input with masking)
-- [ ] Confirmation dialog for delete actions
-- [ ] Status bar showing key hints
+- [x] Implement a two-panel tree-view widget
+  - [x] Top panel: list of servers (expandable/collapsible via Space)
+  - [x] Bottom panel: characters belonging to the selected server
+- [x] Keyboard navigation (arrow keys, Enter to connect, `n` to add new, `d` to delete, `e` to edit)
+- [x] Add/edit server dialog (name, host, port)
+- [x] Add/edit character dialog (name, password input with masking, password hint)
+- [x] Confirmation dialog for delete actions
+- [x] Status bar showing key hints
 
 ## Phase 4: Network Layer
 - [ ] Async runtime integration (`tokio`)

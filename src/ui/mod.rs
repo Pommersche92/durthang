@@ -1,2 +1,2 @@
-// UI module — Phase 3 will implement the server/character selection UI,
-// Phase 5 the game view (scrollback, ANSI colours, input history).
+// UI module — server/character selection screen (Phase 3) and game view (Phase 5).
+pub mod selection;

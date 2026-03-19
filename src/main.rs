@@ -4,7 +4,7 @@ mod map;
 mod net;
 mod ui;
 
-use app::App;
+use app::{App, AppState};
 use clap::Parser;
 use config::Config;
 use crossterm::{
@@ -12,10 +12,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use ratatui::{
-    prelude::*,
-    widgets::{Block, Paragraph},
-};
+use ratatui::prelude::*;
 use std::{fs, io, path::PathBuf, sync::Mutex};
 use tracing::info;
 
@@ -69,12 +66,12 @@ fn main() -> io::Result<()> {
     info!("Durthang starting up");
     info!("Using config file: {}", config_path.display());
 
-    let _config = Config::load(&config_path).unwrap_or_else(|e| {
+    let config = Config::load(&config_path).unwrap_or_else(|e| {
         tracing::warn!("Could not load config from {}: {e}", config_path.display());
         Config::default()
     });
 
-    let mut app = App::new();
+    let mut app = App::new(config, config_path);
 
     // Setup terminal
     enable_raw_mode()?;
@@ -85,17 +82,33 @@ fn main() -> io::Result<()> {
 
     // Main loop
     while app.running {
-        terminal.draw(|frame| {
-            let area = frame.area();
-            let paragraph = Paragraph::new("Durthang — press 'q' to quit")
-                .block(Block::bordered().title("Durthang"));
-            frame.render_widget(paragraph, area);
+        terminal.draw(|frame| match app.state {
+            AppState::ServerSelect => ui::selection::draw(frame, &app.select, &app.config),
+            AppState::Game => { /* Phase 5: game view */ }
         })?;
 
         if let Event::Key(key) = event::read()? {
-            match key.code {
-                KeyCode::Char('q') => app.quit(),
-                _ => {}
+            match app.state {
+                AppState::ServerSelect => {
+                    let quit = ui::selection::handle_key(
+                        &mut app.select,
+                        &mut app.config,
+                        &app.config_path,
+                        key,
+                    );
+                    if quit {
+                        app.quit();
+                    }
+                    if let Some((server_id, char_id)) = app.select.pending_connect.take() {
+                        info!(server_id, char_id, "Connect requested — Phase 4 not yet implemented");
+                        // Phase 4: spawn network task, transition to AppState::Game
+                    }
+                }
+                AppState::Game => {
+                    if key.code == KeyCode::Char('q') {
+                        app.quit();
+                    }
+                }
             }
         }
     }
@@ -107,3 +120,4 @@ fn main() -> io::Result<()> {
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     Ok(())
 }
+
