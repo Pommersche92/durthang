@@ -336,6 +336,56 @@ async fn run_connection(
     }
 }
 
+/// Check whether the escape sequence starting at `seq[0]` (which must be ESC)
+/// is fully terminated within `seq`.
+fn is_complete_escape(seq: &[u8]) -> bool {
+    if seq.len() < 2 || seq[0] != 0x1b {
+        return false;
+    }
+    match seq[1] {
+        b'[' => {
+            // CSI: terminated by a byte in 0x40..=0x7E
+            seq[2..].iter().any(|&b| (0x40..=0x7E).contains(&b))
+        }
+        b']' | b'P' | b'^' | b'_' | b'X' => {
+            // OSC / DCS / PM / APC / SOS: terminated by BEL or ST (ESC \)
+            seq[2..].iter().any(|&b| b == 0x07)
+                || seq[2..].windows(2).any(|w| w == [0x1b, b'\\'])
+        }
+        b'(' | b')' | b'*' | b'+' => {
+            // Charset designation: ESC + designator + one charset byte = 3 bytes
+            seq.len() >= 3
+        }
+        _ => true, // Fe / single-byte: ESC + one byte is always complete
+    }
+}
+
+/// Find the byte offset up to which `buf` can safely be sent as prompt text
+/// without splitting an in-progress ANSI escape sequence.
+/// Any trailing incomplete sequence is excluded from the returned range.
+fn safe_prompt_end(buf: &[u8]) -> usize {
+    let len = buf.len();
+    if len == 0 {
+        return 0;
+    }
+    // Scan backwards (up to 32 bytes) for the last ESC byte.
+    let mut j = len;
+    while j > 0 {
+        j -= 1;
+        if buf[j] == 0x1b {
+            if is_complete_escape(&buf[j..]) {
+                return len; // Last ESC starts a complete sequence → all safe.
+            } else {
+                return j; // Incomplete → cut before this ESC.
+            }
+        }
+        if len - j > 32 {
+            break;
+        }
+    }
+    len // No ESC found in trailing region → all safe.
+}
+
 /// Core read/write loop — shared between plain-TCP and TLS connections.
 ///
 /// Auto-login:
@@ -432,15 +482,20 @@ async fn connection_loop(
                         }
 
                         if had_prompt {
-                            // Strip carriage-return characters before sending: MUME (and many
-                            // MUDs) frequently prefix prompts with \r, which has no meaning in
-                            // our TUI renderer and causes control-character glyphs or visual
-                            // overwrite artifacts.
-                            let prompt_text: String = line_buf.chars()
-                                .filter(|&c| c != '\r')
-                                .collect();
-                            let _ = tx.send(NetEvent::Prompt(prompt_text)).await;
+                            // Don't send a prompt if `line_buf` ends with an
+                            // incomplete ANSI escape sequence — keep the fragment
+                            // for the next read so it can be reassembled.
+                            let safe = safe_prompt_end(line_buf.as_bytes());
+                            if safe > 0 {
+                                let prompt_text: String = line_buf[..safe].chars()
+                                    .filter(|&c| c != '\r')
+                                    .collect();
+                                let _ = tx.send(NetEvent::Prompt(prompt_text)).await;
+                            }
+                            // Keep the incomplete tail (if any) for the next read.
+                            let tail = line_buf[safe..].to_string();
                             line_buf.clear();
+                            line_buf.push_str(&tail);
                         }
                     }
                     Err(e) => {

@@ -604,17 +604,17 @@ fn ansi_to_line(input: &str) -> Line<'static> {
 
             // Find the end of the escape sequence.
             // Per ANSI X3.64 the final byte is in the range 0x40–0x7E ('@'–'~').
-            // Parameter/intermediate bytes (0x20–0x3F) precede it; scanning for
-            // the first byte ≥ 0x40 gives us the correct split even for sequences
-            // with intermediate bytes like `\x1b[>4l` (params ">4", final "l").
+            // Parameter/intermediate bytes (0x20–0x3F) precede it.  We also
+            // stop if we hit another ESC (0x1B) — that means this CSI was
+            // truncated and a new escape sequence starts.
             let seq_start = i + 2;
             let seq_end = bytes[seq_start..]
                 .iter()
-                .position(|&b| (0x40..=0x7E).contains(&b))
+                .position(|&b| (0x40..=0x7E).contains(&b) || b == 0x1b)
                 .map(|j| seq_start + j)
                 .unwrap_or(input.len());
 
-            if seq_end < input.len() {
+            if seq_end < input.len() && bytes[seq_end] != 0x1b {
                 let terminator = bytes[seq_end];
                 let params = &input[seq_start..seq_end];
                 if terminator == b'm' {
@@ -624,8 +624,9 @@ fn ansi_to_line(input: &str) -> Line<'static> {
                 // are silently skipped.
                 i = seq_end + 1;
             } else {
-                // Unterminated sequence — skip to end of this chunk.
-                i = input.len();
+                // Unterminated CSI (hit another ESC or end of input) — skip
+                // the broken params; the next iteration picks up the new ESC.
+                i = seq_end;
             }
             text_start = i;
         } else if bytes[i] == b'\x1b' {
@@ -642,7 +643,9 @@ fn ansi_to_line(input: &str) -> Line<'static> {
                 let next = bytes[i];
                 i += 1; // skip the byte immediately after ESC
                 // Charset-designation sequences have one additional designator byte.
-                if matches!(next, b'(' | b')' | b'*' | b'+') && i < bytes.len() {
+                // Don't consume the next byte if it is ESC — that starts a
+                // new escape sequence and must not be swallowed as a charset code.
+                if matches!(next, b'(' | b')' | b'*' | b'+') && i < bytes.len() && bytes[i] != 0x1b {
                     i += 1; // skip the charset code (e.g. 'B', '0', 'U', …)
                 }
             }
