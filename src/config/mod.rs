@@ -43,11 +43,19 @@ impl Server {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Character {
     pub id: String,
+    /// Display name shown in the UI.
     pub name: String,
     pub server_id: String,
+    /// The username typed at the MUD's login prompt.
+    /// When absent the character's `name` is used instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login: Option<String>,
     /// Optional human-readable reminder — never the actual password.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password_hint: Option<String>,
+    /// Free-form notes (e.g. race, class, level).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
 }
 
 impl Character {
@@ -56,8 +64,15 @@ impl Character {
             id: Uuid::new_v4().to_string(),
             name: name.into(),
             server_id: server_id.into(),
+            login: None,
             password_hint: None,
+            notes: None,
         }
+    }
+
+    /// Returns the login name to use at the MUD prompt (falls back to `name`).
+    pub fn effective_login(&self) -> &str {
+        self.login.as_deref().unwrap_or(&self.name)
     }
 }
 

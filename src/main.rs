@@ -169,7 +169,7 @@ async fn run_loop(app: &mut App, terminal: &mut Terminal<CrosstermBackend<io::St
                             break;
                         }
                         if let Some((server_id, char_id)) = app.select.pending_connect.take() {
-                            do_connect(app, &server_id, &char_id).await;
+                            do_connect(app, &server_id, char_id.as_deref()).await;
                         }
                     }
                     AppState::Game => {
@@ -235,7 +235,7 @@ fn drain_net_events(app: &mut App) {
 // Connect helper
 // ---------------------------------------------------------------------------
 
-async fn do_connect(app: &mut App, server_id: &str, char_id: &str) {
+async fn do_connect(app: &mut App, server_id: &str, char_id: Option<&str>) {
     let server = match app.config.servers.iter().find(|s| s.id == server_id) {
         Some(s) => s.clone(),
         None => {
@@ -243,29 +243,29 @@ async fn do_connect(app: &mut App, server_id: &str, char_id: &str) {
             return;
         }
     };
-    let character = match app.config.characters.iter().find(|c| c.id == char_id) {
-        Some(c) => c.clone(),
-        None => {
-            tracing::warn!("Connect: char_id {char_id} not found in config");
-            return;
-        }
-    };
 
-    info!(
-        "Connecting to {} ({}) as {}",
-        server.name, server.host, character.name
-    );
+    let char_name = if let Some(cid) = char_id {
+        match app.config.characters.iter().find(|c| c.id == cid) {
+            Some(c) => {
+                info!("Connecting to {} ({}) as {}", server.name, server.host, c.name);
+                c.name.clone()
+            }
+            None => {
+                tracing::warn!("Connect: char_id {cid} not found in config");
+                return;
+            }
+        }
+    } else {
+        info!("Connecting to {} ({}) without a saved character", server.name, server.host);
+        String::from("(anonymous)")
+    };
 
     let size = terminal_size();
     let conn = Connection::spawn(server.host.clone(), server.port, size);
 
-    // If a password is stored, send it after the first server prompt arrives.
-    // Phase 5 will handle auto-login properly; for now we just connect.
-    let _ = char_id; // suppress unused warning until Phase 5
-
     app.connection = Some(conn);
     app.connected_server = Some(server.name.clone());
-    app.connected_char = Some(character.name.clone());
+    app.connected_char = Some(char_name);
     app.state = AppState::Game;
 }
 
