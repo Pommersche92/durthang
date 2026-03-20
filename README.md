@@ -4,7 +4,7 @@
 
 # 🏰 Durthang
 
-> *"Durthang (Sauron's castle) loomed dark and tall before them."*  
+> *"A few miles north, high up in the angle where the western spur branched away from the main range, stood the old castle of Durthang, now one of the many orc-holds that clustered about the dale of Udûn."*
 > — J.R.R. Tolkien, *The Return of the King*
 
 **Durthang** is a modern, terminal-based MUD client written in Rust 🦀.
