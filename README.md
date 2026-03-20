@@ -1,39 +1,39 @@
-# Durthang
+# 🏰 Durthang
 
 > *"Durthang (Sauron's castle) loomed dark and tall before them."*  
 > — J.R.R. Tolkien, *The Return of the King*
 
-**Durthang** is a modern, terminal-based MUD client written in Rust.
+**Durthang** is a modern, terminal-based MUD client written in Rust 🦀.
 It runs entirely in your terminal, requires no graphical environment, and ships as a single
 statically-linked binary with no extra runtime dependencies.
 
 ---
 
-## Features
+## ✨ Features
 
 | Category | Details |
 |---|---|
-| **Connection** | Plain TCP and TLS (system root certs); clean disconnect and reconnect |
-| **Telnet** | IAC negotiation — ECHO, NAWS, GMCP; all unknown options refused |
-| **GMCP** | Room.Info parsing for automap; extensible for other modules |
-| **ANSI / VT100** | Full 16- and 256-colour rendering via ratatui |
-| **Scrollback buffer** | 5 000 lines; scroll with PgUp/PgDn or mouse wheel |
-| **Input** | Shell-style history (↑/↓), Home/End/Left/Right cursor movement |
-| **Aliases** | Per-character short-command expansions, stored in config |
-| **Triggers** | Regex → highlight colour and/or auto-send, stored per character |
-| **Copy mode** | Scroll and copy output text to clipboard via OSC 52 |
-| **Automap** | Real-time ASCII map built from GMCP `Room.Info` or heuristic `Exits:` parsing; persisted to disk per server |
-| **Sidebar** | Right-side panel column with an **Automap** minimap and a **Notes** panel; toggleable, resizable, configurable per character |
-| **Notes panel** | Create, edit, delete, and reorder personal free-text notes without leaving the game |
-| **Secure credentials** | Passwords stored in the OS keyring (Secret Service / macOS Keychain / Windows Credential Manager); never written to the config file |
-| **Config persistence** | TOML config at `~/.config/durthang/config.toml` (XDG respected); sidebar layout and notes are saved automatically |
-| **Latency display** | Rolling-average latency shown in the status bar |
-| **Mouse support** | Scroll wheel for scrollback |
-| **Logging** | Structured logs to `~/.local/share/durthang/durthang.log` via `tracing` |
+| 🔌 **Connection** | Plain TCP and TLS (system root certs); clean disconnect and reconnect |
+| 📡 **Telnet** | IAC negotiation — ECHO, NAWS, GMCP; all unknown options refused |
+| 🗺️ **GMCP** | Room.Info parsing for automap; extensible for other modules |
+| 🎨 **ANSI / VT100** | Full 16- and 256-colour rendering via ratatui |
+| 📜 **Scrollback buffer** | 5 000 lines; scroll with PgUp/PgDn or mouse wheel |
+| ⌨️ **Input** | Shell-style history (↑/↓), Home/End/Left/Right cursor movement |
+| ⚡ **Aliases** | Per-character short-command expansions, stored in config |
+| 🔍 **Triggers** | Regex → highlight colour and/or auto-send, stored per character |
+| 📋 **Copy mode** | Scroll and copy output text to clipboard via OSC 52 |
+| 🗺️ **Automap** | Real-time ASCII map built from GMCP `Room.Info` or heuristic `Exits:` parsing; persisted to disk per server |
+| 🪟 **Sidebar** | Right-side panel column with an **Automap** minimap and a **Notes** panel; toggleable, resizable, configurable per character |
+| 📝 **Notes panel** | Create, edit, delete, and reorder personal free-text notes without leaving the game |
+| 🔐 **Secure credentials** | Passwords stored in the OS keyring (Secret Service / macOS Keychain / Windows Credential Manager); never written to the config file |
+| 💾 **Config persistence** | TOML config at `~/.config/durthang/config.toml` (XDG respected); sidebar layout and notes are saved automatically |
+| 📶 **Latency display** | Rolling-average latency shown in the status bar |
+| 🖱️ **Mouse support** | Scroll wheel for scrollback |
+| 🪵 **Logging** | Structured logs to `~/.local/share/durthang/durthang.log` via `tracing` |
 
 ---
 
-## Installation
+## 📦 Installation
 
 ### From crates.io
 
@@ -52,7 +52,7 @@ cargo build --release
 
 **Minimum Rust version:** 1.85 (edition 2024)
 
-### Linux: password storage dependency
+### 🐧 Linux: password storage dependency
 
 Durthang uses the OS keyring to store passwords securely.
 On most Linux desktops this works out of the box via the Secret Service D-Bus API
@@ -74,7 +74,7 @@ using the server's own login prompt.
 
 ---
 
-## Quick Start
+## 🚀 Quick Start
 
 Launch Durthang:
 
@@ -90,7 +90,7 @@ durthang --config ~/my-muds.toml
 
 You will land on the **server/character selection screen**.
 
-### Selection screen keys
+### 🗂️ Selection screen keys
 
 | Key | Action |
 |---|---|
@@ -105,24 +105,29 @@ You will land on the **server/character selection screen**.
 
 ---
 
-## Game Screen
+## 🎮 Game Screen
 
 Once connected, the game screen shows:
 
 ```
 ┌─ MUME ─────────────────────────────────────┬──────────────┐
 │                                            │  Automap     │
-│  [scrollable MUD output]                  │  . . .@. .   │
+│  [scrollable MUD output]                   │  . . .@. .   │
 │                                            │  @ Rivendell │
 │                                            ├──────────────┤
-├────────────────────────────────────────────│  Notes       │
-│ ▶ input line                              │  - buy food  │
-├─────────────────────────────── ↑42 ───────┴──────────────┤
+│                                            │  Notes       │
+│                                            │  - buy food  │
+│                                            │  - repair eq │
+│                                            │              │
+│                                            │              │
+├────────────────────────────────────────────│              │
+│ ▶ input line                              │              │
+├─────────────────────────────── ↑42 ────────┴──────────────┤
 │ MUME / Berejorn   lat 12ms   Ctrl+Q disconnect            │
 └───────────────────────────────────────────────────────────┘
 ```
 
-### Game screen keys
+### ⌨️ Game screen keys
 
 | Key | Action |
 |---|---|
@@ -136,7 +141,7 @@ Once connected, the game screen shows:
 | `Ctrl+C` | Enter copy mode (scroll + copy a line) |
 | `Ctrl+Q` | Disconnect and return to the selection screen |
 
-### Meta-commands (type in the input line)
+### 💬 Meta-commands (type in the input line)
 
 | Command | Effect |
 |---|---|
@@ -151,13 +156,13 @@ Once connected, the game screen shows:
 
 ---
 
-## Sidebar panels
+## 🪟 Sidebar panels
 
 The sidebar is toggled with **F3**. Focus cycles through panels with **F4**.
 Press **`o`** while a panel is focused to open the **Sidebar Options** overlay,
 where you can toggle panel visibility, reorder panels, and adjust the sidebar width.
 
-### Automap panel
+### 🗺️ Automap panel
 
 The automap builds a live ASCII grid as you move through the world:
 
@@ -169,7 +174,7 @@ Map data is loaded from GMCP `Room.Info` when available, with a fallback heurist
 that reads `Exits:` lines from the server output.
 Maps are saved automatically to `~/.local/share/durthang/<server-id>.map.json`.
 
-### Notes panel
+### 📝 Notes panel
 
 A personal scratchpad attached to each character.
 
@@ -186,7 +191,7 @@ Notes are persisted in the character's sidebar config automatically on every cha
 
 ---
 
-## Aliases & Triggers
+## ⚡ Aliases & Triggers
 
 Aliases and triggers are stored per character in the config file.
 
@@ -210,7 +215,7 @@ Aliases and triggers are stored per character in the config file.
 
 ---
 
-## Configuration
+## ⚙️ Configuration
 
 Config file: `~/.config/durthang/config.toml`
 
@@ -254,12 +259,12 @@ pattern = "You are hungry"
 color   = "yellow"
 ```
 
-Passwords are **never** stored here; they live in the OS keyring under the key
+Passwords are **never** stored here 🔒; they live in the OS keyring under the key
 `durthang/<server-id>/<character-name>`.
 
 ---
 
-## Project Structure
+## 🗂️ Project Structure
 
 ```
 src/
@@ -276,9 +281,9 @@ src/
 
 ---
 
-## Contributing
+## 🤝 Contributing
 
-Issues and pull requests are welcome.
+Issues and pull requests are welcome!
 
 ```bash
 cargo fmt --check
@@ -288,10 +293,11 @@ cargo test
 
 ---
 
-## License
+## 📜 License
 
 GNU General Public License v3.0 — see [LICENSE](LICENSE) for the full text.
 
 ---
 
-*"Even in Mordor, there were those who endured."*
+*"Even in Mordor, there were those who endured." 🔥*
+
