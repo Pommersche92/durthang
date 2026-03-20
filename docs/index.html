@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Durthang — Terminal MUD Client</title>
+  <meta name="description"
+        content="Durthang is a modern, terminal-based MUD client written in Rust. Named after Sauron's fortress in Mordor." />
+
+  <link rel="stylesheet" href="site.css" />
+
+
+</head>
+<body>
+
+<!-- ======================================== NAV ======================================== -->
+<nav>
+  <span class="nav-brand">Durthang</span>
+  <ul>
+    <li><a href="#name">The Name</a></li>
+    <li><a href="#features">Features</a></li>
+    <li><a href="#install">Install</a></li>
+    <li><a href="#links">Links</a></li>
+    <li><a href="https://github.com/Pommersche92/durthang">GitHub</a></li>
+  </ul>
+</nav>
+
+<!-- ======================================== HERO ======================================= -->
+<header class="hero">
+  <!-- ember particles injected by JS -->
+  <div id="embers"></div>
+
+  <p class="hero-eyebrow">A terminal MUD client from the shadows of Mordor</p>
+  <h1 class="hero-title">Durthang</h1>
+  <p class="hero-tagline">Written in Rust &nbsp;·&nbsp; Runs in your terminal &nbsp;·&nbsp; No X required</p>
+
+  <blockquote class="hero-quote">
+    "Durthang (Sauron's castle) loomed dark and tall before them."
+    <cite>— J.R.R. Tolkien, <em>The Return of the King</em></cite>
+  </blockquote>
+
+  <div class="hero-buttons">
+    <a href="#install" class="btn btn-primary">Install</a>
+    <a href="https://github.com/Pommersche92/durthang" class="btn btn-secondary">View on GitHub</a>
+  </div>
+
+  <div class="scroll-hint" aria-hidden="true">&#8964;</div>
+</header>
+
+<hr class="section-divider" />
+
+<!-- ===================================== THE NAME ==================================== -->
+<section id="name">
+  <p class="section-eyebrow">Lore</p>
+  <h2>The Name</h2>
+
+  <p>
+    <strong>Durthang</strong> is a fortress of Sauron in the south-western reaches of Mordor,
+    set into the slopes of the Ephel Dúath — the Mountains of Shadow — overlooking the great
+    plateau of Gorgoroth. It is one of three dark towers that guard the western approaches to
+    Sauron's realm, and it looms in the background as Frodo and Sam make their desperate
+    crossing toward Mount Doom.
+  </p>
+
+  <div class="lore-card">
+    <p>
+      Tolkien derived Durthang from his invented
+      <strong>Black Speech</strong> or from the language of the Orcs, consistent
+      with other Mordor place-names. The most widely accepted analysis breaks the word
+      into two Sindarin-influenced roots common to the dark kingdoms:
+    </p>
+    <dl class="lore-map">
+      <div class="lore-map-item">
+        <dt>Root</dt>
+        <dd><strong>Dur</strong> &nbsp;·&nbsp; <em>dôr / dur</em></dd>
+      </div>
+      <div class="lore-map-item">
+        <dt>Meaning</dt>
+        <dd>"Dark", "gloomy", or "lurking" — cf. <em>Dol Dúghul</em>, <em>Dorthonion</em></dd>
+      </div>
+      <div class="lore-map-item">
+        <dt>Root</dt>
+        <dd><strong>Thang</strong> &nbsp;·&nbsp; <em>tang</em></dd>
+      </div>
+      <div class="lore-map-item">
+        <dt>Meaning</dt>
+        <dd>"Iron", "oppression", or "compulsion" — cf. <em>Angband</em> (iron prison), <em>Thangorodrim</em></dd>
+      </div>
+    </dl>
+    <p style="margin-top:1.4rem">
+      Together: <em>"Dark Iron"</em> or <em>"Gloomy Fortress of Iron"</em> — an apt name
+      for a Rust-based terminal client that holds firm, refuses to crash, and runs everywhere
+      without a graphical interface.
+    </p>
+  </div>
+
+  <p>
+    Frodo and Sam pass beneath the fortress walls in <em>The Return of the King</em> (Book VI,
+    Chapter 2: <em>"The Land of Shadow"</em>). It is described as a place of soldiers and Dark Riders,
+    one of the garrison towers that Sauron maintained to prevent escape from Mordor — not the grand
+    centrepiece of his realm, but a brooding, ever-watchful sentinel at the edge of shadow.
+  </p>
+  <p>
+    The choice of name for this MUD client is deliberate: like the fortress, Durthang the
+    application <em>stands watch</em> — connecting you to the text-based worlds of the internet,
+    reliably and without ceremony, from the comfort of your terminal.
+  </p>
+</section>
+
+<hr class="section-divider" />
+
+<!-- ===================================== FEATURES ==================================== -->
+<section id="features">
+  <p class="section-eyebrow">Capabilities</p>
+  <h2>Features</h2>
+
+  <div class="feature-grid">
+    <div class="feature-card">
+      <span class="feature-icon">⚔</span>
+      <h3>TLS &amp; Plain TCP</h3>
+      <p>Connect securely with system root certificates via <strong>rustls</strong>,
+         or plain TCP — your choice.</p>
+    </div>
+    <div class="feature-card">
+      <span class="feature-icon">🗺</span>
+      <h3>Automap</h3>
+      <p>Real-time ASCII minimap built from GMCP <code>Room.Info</code> or heuristic
+         <code>Exits:</code> parsing. Persisted per server.</p>
+    </div>
+    <div class="feature-card">
+      <span class="feature-icon">📜</span>
+      <h3>Aliases &amp; Triggers</h3>
+      <p>Per-character command aliases and regex-based triggers with colour highlighting
+         and auto-send, stored in TOML.</p>
+    </div>
+    <div class="feature-card">
+      <span class="feature-icon">🔐</span>
+      <h3>Secure Credentials</h3>
+      <p>Passwords live in the OS keyring (Secret Service / macOS Keychain /
+         Windows Credential Manager) — never in the config file.</p>
+    </div>
+    <div class="feature-card">
+      <span class="feature-icon">🖥</span>
+      <h3>Full ANSI Colour</h3>
+      <p>256-colour and truecolour rendering via <strong>ratatui</strong>. Works in
+         any modern terminal emulator.</p>
+    </div>
+    <div class="feature-card">
+      <span class="feature-icon">📋</span>
+      <h3>Notes Panel</h3>
+      <p>A personal scratchpad attached to each character, saved automatically in
+         the sidebar config.</p>
+    </div>
+    <div class="feature-card">
+      <span class="feature-icon">📡</span>
+      <h3>GMCP</h3>
+      <p>Full Telnet IAC negotiation; ECHO, NAWS, and GMCP supported. Extensible
+         for additional modules.</p>
+    </div>
+    <div class="feature-card">
+      <span class="feature-icon">📦</span>
+      <h3>Single Binary</h3>
+      <p>Statically linked. No runtime dependencies. Drop it in your PATH and go.</p>
+    </div>
+    <div class="feature-card">
+      <span class="feature-icon">⏱</span>
+      <h3>Latency Meter</h3>
+      <p>Rolling-average round-trip time shown in the status bar, updated from
+         active probes and user commands.</p>
+    </div>
+  </div>
+</section>
+
+<hr class="section-divider" />
+
+<!-- ===================================== INSTALL ===================================== -->
+<section id="install">
+  <p class="section-eyebrow">Getting Started</p>
+  <h2>Installation</h2>
+
+  <h3>From crates.io</h3>
+  <div class="terminal">
+    <span class="prompt">$ </span><span class="cmd">cargo install durthang</span>
+  </div>
+
+  <h3>From source</h3>
+  <div class="terminal">
+    <span class="prompt">$ </span><span class="cmd">git clone https://github.com/Pommersche92/durthang.git</span><br />
+    <span class="prompt">$ </span><span class="cmd">cd durthang &amp;&amp; cargo build --release</span><br />
+    <span class="comment"># binary: target/release/durthang</span>
+  </div>
+
+  <p>Minimum Rust version: <strong>1.85</strong> (edition 2024).</p>
+
+  <h3 style="margin-top:2rem">Linux: Secret Service dependency</h3>
+  <p>
+    On headless or minimal Linux installations you need a running Secret Service daemon
+    for password storage:
+  </p>
+  <div class="terminal">
+    <span class="comment"># Debian / Ubuntu (GNOME Keyring)</span><br />
+    <span class="prompt">$ </span><span class="cmd">sudo apt install gnome-keyring</span><br />
+    <span class="prompt">$ </span><span class="cmd">eval $(gnome-keyring-daemon --start --components=secrets)</span>
+  </div>
+
+  <h3 style="margin-top:2rem">Quick key reference</h3>
+  <table class="key-table">
+    <thead>
+      <tr>
+        <th>Key</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>Enter</td><td>Send input line</td></tr>
+      <tr><td>↑ / ↓</td><td>Input history</td></tr>
+      <tr><td>PgUp / PgDn</td><td>Scroll the output buffer</td></tr>
+      <tr><td>Ctrl+End</td><td>Jump to live view</td></tr>
+      <tr><td>F3</td><td>Toggle right sidebar</td></tr>
+      <tr><td>F4</td><td>Cycle sidebar focus</td></tr>
+      <tr><td>Ctrl+C</td><td>Enter copy mode</td></tr>
+      <tr><td>Ctrl+Q</td><td>Disconnect / quit</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<hr class="section-divider" />
+
+<!-- ====================================== LINKS ===================================== -->
+<section id="links">
+  <p class="section-eyebrow">Externe Links</p>
+  <h2>Ressourcen &amp; Impressum</h2>
+  <div class="feature-grid">
+
+    <div class="feature-card">
+      <span class="feature-icon">&#128218;</span>
+      <h3>API-Dokumentation</h3>
+      <p>
+        Die vollständige Rust-Dokumentation aller öffentlichen Typen, Traits
+        und Funktionen ist auf <strong>docs.rs</strong> verfügbar und wird bei
+        jedem Release automatisch generiert.
+      </p>
+      <a href="https://docs.rs/durthang" class="btn btn-secondary"
+         target="_blank" rel="noopener noreferrer">docs.rs/durthang &#8599;</a>
+    </div>
+
+    <div class="feature-card">
+      <span class="feature-icon">&#9993;</span>
+      <h3>Entwickler &amp; Impressum</h3>
+      <p>
+        Informationen zum Entwickler, Kontakt und rechtliche Angaben
+        (Impressum gemäß TMG) sind auf der persönlichen Homepage des Autors
+        zu finden.
+      </p>
+      <a href="https://geisel-web.de" class="btn btn-secondary"
+         target="_blank" rel="noopener noreferrer">geisel-web.de &#8599;</a>
+    </div>
+
+  </div>
+</section>
+
+<hr class="section-divider" />
+
+<!-- ====================================== FOOTER ===================================== -->
+<footer>
+  <span class="footer-brand">Durthang</span>
+  <div class="footer-links">
+    <a href="https://github.com/Pommersche92/durthang">GitHub</a>
+    <a href="https://github.com/Pommersche92/durthang/issues">Issues</a>
+    <a href="https://crates.io/crates/durthang">crates.io</a>
+    <a href="https://docs.rs/durthang" target="_blank" rel="noopener noreferrer">docs.rs</a>
+    <a href="https://github.com/Pommersche92/durthang/blob/main/LICENSE">License (GPL-3.0)</a>
+    <a href="#impressum">Impressum</a>
+  </div>
+  <p>
+    Copyright &copy; 2026 Raimo Geisel &nbsp;&mdash;&nbsp;
+    Released under the
+    <a href="https://www.gnu.org/licenses/gpl-3.0.html">GNU General Public License v3</a>.
+  </p>
+  <p style="margin-top:0.5rem; font-size:0.8rem; color: var(--text-muted)">
+    "Durthang" is a place-name from J.R.R. Tolkien's <em>The Return of the King</em>.
+    Tolkien's works are the property of the Tolkien Estate.
+  </p>
+
+  <details id="impressum" class="impressum-details">
+    <summary>Impressum (Angaben gem&auml;&szlig; &sect;&nbsp;5&nbsp;TMG)</summary>
+    <div class="impressum-body">
+      <section>
+        <h4>Angaben gem&auml;&szlig; &sect;&nbsp;5&nbsp;TMG</h4>
+        <address>
+          Raimo Geisel<br />
+          Uhlandstra&szlig;e 15<br />
+          75385 Bad Teinach
+        </address>
+      </section>
+      <section>
+        <h4>Kontakt</h4>
+        <p>E-Mail: <a href="mailto:raimog92@protonmail.com">raimog92@protonmail.com</a></p>
+      </section>
+      <section>
+        <h4>Streitschlichtung</h4>
+        <p>
+          Die Europ&auml;ische Kommission stellt eine Plattform zur
+          Online-Streitbeilegung (OS) bereit:
+          <a href="https://ec.europa.eu/consumers/odr" target="_blank"
+             rel="noopener noreferrer">https://ec.europa.eu/consumers/odr</a>.
+        </p>
+        <p>
+          Wir sind nicht bereit oder verpflichtet, an Streitbeilegungsverfahren
+          vor einer Verbraucherschlichtungsstelle teilzunehmen.
+        </p>
+      </section>
+    </div>
+  </details>
+</footer>
+
+<script src="site.js" defer></script>
+
+<!-- ===================================== GDPR BANNER ===================================== -->
+<aside id="gdpr-banner" hidden role="dialog"
+       aria-labelledby="gdpr-title" aria-modal="false">
+  <div class="gdpr-inner">
+    <div class="gdpr-text">
+      <strong id="gdpr-title">Privacy Notice</strong>
+      <p>This site is hosted on GitHub Pages and uses no analytics or tracking.
+         Fonts and all assets are served locally; no third-party requests are made.
+         A single functional cookie stores your response to this notice for one year.</p>
+    </div>
+    <div class="gdpr-actions">
+      <button id="gdpr-accept"  class="gdpr-btn gdpr-btn--accept">Accept</button>
+      <button id="gdpr-dismiss" class="gdpr-btn gdpr-btn--dismiss">Dismiss</button>
+    </div>
+  </div>
+</aside>
+
+</body>
+</html>
