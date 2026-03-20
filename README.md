@@ -1,74 +1,296 @@
 # Durthang
 
-> *"Durthang (Sauron's castle) loomed dark and tall before them."*
+> *"Durthang (Sauron's castle) loomed dark and tall before them."*  
 > — J.R.R. Tolkien, *The Return of the King*
 
-**Durthang** is a modern, terminal-based MUD client written in Rust, named after thes fortress in Mordor. Like its namesake, it is built to endure — fast, lean, and uncompromising.
+**Durthang** is a modern, terminal-based MUD client written in Rust.
+It runs entirely in your terminal, requires no graphical environment, and ships as a single
+statically-linked binary with no extra runtime dependencies.
 
-## Features (planned)
+---
 
-- **Server & character management** — tree-view selection screen on startup; add, edit, and delete servers and characters without leaving the terminal
-- **Secure credential storage** — passwords stored in the OS keyring or an encrypted vault; never in plain text
-- **Full ANSI/VT100 colour support** — renders the rich text output of classic and modern MUD servers faithfully
-- **Telnet protocol** — proper IAC negotiation including ECHO, NAWS, and GMCP stubs
-- **Scrollback buffer** — configurable history so you never miss a line
-- **Input history** — recall previous commands with the arrow keys, just like a shell
-- **Alias & trigger system** — automate repetitive input and highlight important events
-- **Automap** — optional real-time ASCII/Unicode map built from GMCP `Room.Info` data or heuristic output parsing
-- **Lightweight** — a single static binary with no runtime dependencies
+## Features
 
-## Status
+| Category | Details |
+|---|---|
+| **Connection** | Plain TCP and TLS (system root certs); clean disconnect and reconnect |
+| **Telnet** | IAC negotiation — ECHO, NAWS, GMCP; all unknown options refused |
+| **GMCP** | Room.Info parsing for automap; extensible for other modules |
+| **ANSI / VT100** | Full 16- and 256-colour rendering via ratatui |
+| **Scrollback buffer** | 5 000 lines; scroll with PgUp/PgDn or mouse wheel |
+| **Input** | Shell-style history (↑/↓), Home/End/Left/Right cursor movement |
+| **Aliases** | Per-character short-command expansions, stored in config |
+| **Triggers** | Regex → highlight colour and/or auto-send, stored per character |
+| **Copy mode** | Scroll and copy output text to clipboard via OSC 52 |
+| **Automap** | Real-time ASCII map built from GMCP `Room.Info` or heuristic `Exits:` parsing; persisted to disk per server |
+| **Sidebar** | Right-side panel column with an **Automap** minimap and a **Notes** panel; toggleable, resizable, configurable per character |
+| **Notes panel** | Create, edit, delete, and reorder personal free-text notes without leaving the game |
+| **Secure credentials** | Passwords stored in the OS keyring (Secret Service / macOS Keychain / Windows Credential Manager); never written to the config file |
+| **Config persistence** | TOML config at `~/.config/durthang/config.toml` (XDG respected); sidebar layout and notes are saved automatically |
+| **Latency display** | Rolling-average latency shown in the status bar |
+| **Mouse support** | Scroll wheel for scrollback |
+| **Logging** | Structured logs to `~/.local/share/durthang/durthang.log` via `tracing` |
 
-Early development. See [TODO.md](TODO.md) for the full roadmap.
+---
 
-## Getting Started
+## Installation
 
-### Prerequisites
-
-- Rust toolchain (stable, 1.80+): <https://rustup.rs>
-
-> **FreeBSD / OpenBSD:** Password storage relies on the [Secret Service API](https://specifications.freedesktop.org/secret-service/latest/) via D-Bus.
-> You need a running Secret Service daemon — either **GNOME Keyring** (`gnome-keyring-daemon`) or **KWallet**.
-> Install the relevant package for your desktop environment and make sure the daemon is started before launching Durthang.
-> On a headless system without D-Bus the application will still start, but saving passwords will fail with a runtime error.
-
-### Build & run
+### From crates.io
 
 ```bash
-git clone https://github.com/yourname/durthang.git
-cd durthang
-cargo run
+cargo install durthang
 ```
 
-### Usage
+### From source
 
-On first launch you will be greeted by the server/character selection screen. Use the arrow keys to navigate, **Enter** to connect, **n** to add a new entry, **e** to edit, and **d** to delete. Press **q** or **Ctrl-C** to quit.
+```bash
+git clone https://github.com/Pommersche92/durthang.git
+cd durthang
+cargo build --release
+# The binary is at target/release/durthang
+```
 
-Once connected, you play the game in the main view. Press **?** for a full list of key bindings.
+**Minimum Rust version:** 1.85 (edition 2024)
+
+### Linux: password storage dependency
+
+Durthang uses the OS keyring to store passwords securely.
+On most Linux desktops this works out of the box via the Secret Service D-Bus API
+(GNOME Keyring, KWallet, etc.).
+
+On a **headless** or minimal system you need a running Secret Service daemon:
+
+```bash
+# Debian/Ubuntu — GNOME Keyring
+sudo apt install gnome-keyring
+eval $(gnome-keyring-daemon --start --components=secrets)
+
+# or use the kwallet-based stack on KDE
+```
+
+Durthang will still start without a keyring, but password saving will fail with a
+runtime error. You can work around this by leaving the password field blank and
+using the server's own login prompt.
+
+---
+
+## Quick Start
+
+Launch Durthang:
+
+```bash
+durthang
+```
+
+An optional `--config` flag points to a custom config file:
+
+```bash
+durthang --config ~/my-muds.toml
+```
+
+You will land on the **server/character selection screen**.
+
+### Selection screen keys
+
+| Key | Action |
+|---|---|
+| `↑` / `↓` | Move cursor |
+| `Space` / `←` / `→` | Expand or collapse a server |
+| `Enter` | Connect with the selected character |
+| `N` | Add a new server |
+| `n` | Add a new character to the selected server |
+| `e` | Edit the selected server or character |
+| `d` | Delete the selected server or character (with confirmation) |
+| `q` / `Ctrl+Q` | Quit |
+
+---
+
+## Game Screen
+
+Once connected, the game screen shows:
+
+```
+┌─ MUME ─────────────────────────────────────┬──────────────┐
+│                                            │  Automap     │
+│  [scrollable MUD output]                  │  . . .@. .   │
+│                                            │  @ Rivendell │
+│                                            ├──────────────┤
+├────────────────────────────────────────────│  Notes       │
+│ ▶ input line                              │  - buy food  │
+├─────────────────────────────── ↑42 ───────┴──────────────┤
+│ MUME / Berejorn   lat 12ms   Ctrl+Q disconnect            │
+└───────────────────────────────────────────────────────────┘
+```
+
+### Game screen keys
+
+| Key | Action |
+|---|---|
+| `Enter` | Send the current input line |
+| `↑` / `↓` | Input history |
+| `PgUp` / `PgDn` | Scroll the output buffer |
+| `Ctrl+End` | Jump back to the live view |
+| `F3` | Toggle the right sidebar |
+| `F4` | Cycle focus to the next sidebar panel |
+| `F1` / `Esc` (in sidebar) | Return focus to the game input |
+| `Ctrl+C` | Enter copy mode (scroll + copy a line) |
+| `Ctrl+Q` | Disconnect and return to the selection screen |
+
+### Meta-commands (type in the input line)
+
+| Command | Effect |
+|---|---|
+| `/connect` | Reconnect to the current server |
+| `/disconnect` | Disconnect and return to the selection screen |
+| `/quit` | Exit Durthang |
+| `/alias <name> <expansion>` | Add or update an alias |
+| `/unalias <name>` | Remove an alias |
+| `/trigger <regex> [color=<c>] [send=<cmd>]` | Add a trigger |
+| `/untrigger <id-prefix>` | Remove a trigger |
+| `/sidebar right` | Toggle the right sidebar |
+
+---
+
+## Sidebar panels
+
+The sidebar is toggled with **F3**. Focus cycles through panels with **F4**.
+Press **`o`** while a panel is focused to open the **Sidebar Options** overlay,
+where you can toggle panel visibility, reorder panels, and adjust the sidebar width.
+
+### Automap panel
+
+The automap builds a live ASCII grid as you move through the world:
+
+- `@` marks your current room.
+- `.` marks known adjacent rooms.
+- The legend line shows the current room name and Z-level.
+
+Map data is loaded from GMCP `Room.Info` when available, with a fallback heuristic
+that reads `Exits:` lines from the server output.
+Maps are saved automatically to `~/.local/share/durthang/<server-id>.map.json`.
+
+### Notes panel
+
+A personal scratchpad attached to each character.
+
+| Key | Action |
+|---|---|
+| `n` / `a` | Add a new note |
+| `e` / `Enter` | Edit the selected note inline |
+| `d` / `Delete` | Delete the selected note |
+| `K` | Move the selected note up |
+| `J` | Move the selected note down |
+| `Esc` | Cancel editing |
+
+Notes are persisted in the character's sidebar config automatically on every change.
+
+---
+
+## Aliases & Triggers
+
+Aliases and triggers are stored per character in the config file.
+
+**Alias example** — type `k orc` in game and it expands to `kill orc`:
+
+```
+/alias k kill
+```
+
+**Trigger example** — highlight lines containing "You are hungry" in yellow:
+
+```
+/trigger You are hungry color=yellow
+```
+
+**Trigger with auto-response** — auto-buy food when a shopkeeper says it's available:
+
+```
+/trigger "You see food on sale" send="buy bread"
+```
+
+---
 
 ## Configuration
 
-Configuration is stored at `~/.config/durthang/config.toml` (XDG base dir respected). A commented example file will be generated on first run.
+Config file: `~/.config/durthang/config.toml`
 
-## Project Structure (planned)
+```toml
+[[servers]]
+id = "…"            # auto-generated UUID
+name = "MUME"
+host = "mume.org"
+port = 4242
+tls  = true
+
+[[characters]]
+id        = "…"
+name      = "Eomer"
+server_id = "…"    # references servers[].id
+login     = "xX_H0R538055_Xx"
+password_hint = "mother's maiden name"   # reminder only, not the actual password
+notes     = "Rohirrim, warrior"
+
+[characters.sidebar]
+right_visible = true
+right_width   = 26
+
+[[characters.sidebar.panels]]
+kind     = "automap"
+side     = "right"
+height_pct = 35
+
+[[characters.sidebar.panels]]
+kind     = "notes"
+side     = "right"
+height_pct = 65
+
+[[characters.aliases]]
+name      = "k"
+expansion = "kill"
+
+[[characters.triggers]]
+id      = "…"
+pattern = "You are hungry"
+color   = "yellow"
+```
+
+Passwords are **never** stored here; they live in the OS keyring under the key
+`durthang/<server-id>/<character-name>`.
+
+---
+
+## Project Structure
 
 ```
 src/
-  main.rs          entry point, app loop
-  app.rs           top-level state machine
-  ui/              all ratatui widgets and screens
-  net/             async telnet / TCP connection layer
-  config/          serde config and credential management
-  map/             automap data model and renderer
+  main.rs        Entry point, CLI parsing, terminal setup, main event loop
+  app.rs         Top-level state machine (ServerSelect ↔ Game)
+  config/        Serde data model, TOML persistence, keyring helpers
+  net/           Async TCP/TLS/Telnet connection task (tokio)
+  ui/
+    selection.rs Server/character selection tree-view
+    game.rs      Game screen, key handling, alias/trigger evaluation
+    sidebar.rs   Sidebar panel system (automap + notes)
+  map/           Room data model, GMCP/heuristic parsing, JSON persistence
 ```
+
+---
 
 ## Contributing
 
-The project is in its infancy. Issues and pull requests are welcome once the initial structure is in place.
+Issues and pull requests are welcome.
+
+```bash
+cargo fmt --check
+cargo clippy -- -D warnings
+cargo test
+```
+
+---
 
 ## License
 
-GNU GPL 3.0 — see `LICENSE` for details.
+GNU General Public License v3.0 — see [LICENSE](LICENSE) for the full text.
 
 ---
 

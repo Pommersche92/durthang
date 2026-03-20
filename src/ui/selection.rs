@@ -1,3 +1,10 @@
+// Copyright (c) 2026 Raimo Geisel
+// SPDX-License-Identifier: GPL-3.0-only
+//
+// Durthang is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free
+// Software Foundation, version 3.  See <https://www.gnu.org/licenses/gpl-3.0.html>.
+
 //! Server / character selection screen.
 //!
 //! Layout (single-panel tree-view):
@@ -15,11 +22,11 @@ use std::path::Path;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
+    Frame,
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Clear, List, ListItem, ListState, Paragraph},
-    Frame,
 };
 use tracing::warn;
 
@@ -30,6 +37,10 @@ use crate::config::{self, Character, Config, Server};
 // ---------------------------------------------------------------------------
 
 /// One visible row in the flat tree list.
+///
+/// The tree is re-built from scratch on every key event and frame draw,
+/// so this type acts as a simple view projection rather than a persistent
+/// data model.
 #[derive(Debug)]
 enum TreeRow {
     Server {
@@ -50,7 +61,11 @@ enum TreeRow {
     },
 }
 
-/// Build the flat, visible tree from the current config + collapsed set.
+/// Build the flat, visible tree from the current config and collapsed set.
+///
+/// Each server is always present; its characters are omitted when the server
+/// row is in the collapsed set.  The `is_last` flag on character rows
+/// controls whether `└` or `├` is used as the tree connector glyph.
 fn build_tree(config: &Config, collapsed: &HashSet<String>) -> Vec<TreeRow> {
     let mut rows = Vec::new();
     for server in &config.servers {
@@ -84,6 +99,7 @@ fn build_tree(config: &Config, collapsed: &HashSet<String>) -> Vec<TreeRow> {
 // Dialog types
 // ---------------------------------------------------------------------------
 
+/// A single editable field inside a [`TextDialog`].
 pub struct DialogField {
     pub label: &'static str,
     pub value: String,
@@ -91,34 +107,63 @@ pub struct DialogField {
 }
 
 impl DialogField {
+    /// Create an empty, unmasked field with the given label.
     fn plain(label: &'static str) -> Self {
-        Self { label, value: String::new(), masked: false }
+        Self {
+            label,
+            value: String::new(),
+            masked: false,
+        }
     }
+    /// Create an unmasked field with the given label and a pre-filled value.
     fn prefilled(label: &'static str, value: impl Into<String>) -> Self {
-        Self { label, value: value.into(), masked: false }
+        Self {
+            label,
+            value: value.into(),
+            masked: false,
+        }
     }
+    /// Create an empty field whose value is rendered as asterisks.
     fn secret(label: &'static str) -> Self {
-        Self { label, value: String::new(), masked: true }
+        Self {
+            label,
+            value: String::new(),
+            masked: true,
+        }
     }
 }
 
+/// A modal dialog with one or more labelled text fields and a focused index.
 pub struct TextDialog {
     pub title: &'static str,
     pub fields: Vec<DialogField>,
     pub focused: usize,
 }
 
+/// The item to be deleted when the user confirms a delete dialog.
 pub enum DeleteTarget {
     Server(String),
     Character(String),
 }
 
+/// All possible modal dialogs that can be open on the selection screen.
 pub enum Dialog {
     AddServer(TextDialog),
-    EditServer { server_id: String, inner: TextDialog },
-    AddCharacter { server_id: String, inner: TextDialog },
-    EditCharacter { char_id: String, inner: TextDialog },
-    ConfirmDelete { target: DeleteTarget },
+    EditServer {
+        server_id: String,
+        inner: TextDialog,
+    },
+    AddCharacter {
+        server_id: String,
+        inner: TextDialog,
+    },
+    EditCharacter {
+        char_id: String,
+        inner: TextDialog,
+    },
+    ConfirmDelete {
+        target: DeleteTarget,
+    },
 }
 
 impl Dialog {
@@ -242,9 +287,10 @@ impl SelectState {
     /// After a config change, move cursor to the row with the given server id.
     fn move_to_server(&mut self, config: &Config, server_id: &str) {
         let tree = build_tree(config, &self.collapsed);
-        if let Some(pos) = tree.iter().position(|r| {
-            matches!(r, TreeRow::Server { server_id: sid, .. } if sid == server_id)
-        }) {
+        if let Some(pos) = tree
+            .iter()
+            .position(|r| matches!(r, TreeRow::Server { server_id: sid, .. } if sid == server_id))
+        {
             self.cursor = pos;
         }
         self.clamp(tree.len());
@@ -253,9 +299,10 @@ impl SelectState {
     /// After a config change, move cursor to the row with the given character id.
     fn move_to_char(&mut self, config: &Config, char_id: &str) {
         let tree = build_tree(config, &self.collapsed);
-        if let Some(pos) = tree.iter().position(|r| {
-            matches!(r, TreeRow::Character { char_id: cid, .. } if cid == char_id)
-        }) {
+        if let Some(pos) = tree
+            .iter()
+            .position(|r| matches!(r, TreeRow::Character { char_id: cid, .. } if cid == char_id))
+        {
             self.cursor = pos;
         }
         self.clamp(tree.len());
@@ -355,7 +402,10 @@ fn handle_dialog_key(
                 let name = d.fields[0].value.trim().to_string();
                 let host = d.fields[1].value.trim().to_string();
                 let port = d.fields[2].value.trim().parse::<u16>().unwrap_or(23);
-                let tls  = matches!(d.fields[3].value.trim().to_lowercase().as_str(), "y" | "yes" | "true" | "1");
+                let tls = matches!(
+                    d.fields[3].value.trim().to_lowercase().as_str(),
+                    "y" | "yes" | "true" | "1"
+                );
                 if !name.is_empty() && !host.is_empty() {
                     let mut server = Server::new(name, host, port);
                     server.tls = tls;
@@ -368,7 +418,10 @@ fn handle_dialog_key(
             }
         },
 
-        Dialog::EditServer { server_id, inner: d } => {
+        Dialog::EditServer {
+            server_id,
+            inner: d,
+        } => {
             let server_id = server_id.clone();
             match text_input(d, key) {
                 TextInputResult::Cancel => true,
@@ -377,11 +430,20 @@ fn handle_dialog_key(
                     let name = d.fields[0].value.trim().to_string();
                     let host = d.fields[1].value.trim().to_string();
                     let port = d.fields[2].value.trim().parse::<u16>().unwrap_or(23);
-                    let tls  = matches!(d.fields[3].value.trim().to_lowercase().as_str(), "y" | "yes" | "true" | "1");
+                    let tls = matches!(
+                        d.fields[3].value.trim().to_lowercase().as_str(),
+                        "y" | "yes" | "true" | "1"
+                    );
                     if let Some(s) = config.servers.iter_mut().find(|s| s.id == server_id) {
-                        if !name.is_empty() { s.name = name; }
-                        if !host.is_empty() { s.host = host; }
-                        if port > 0 { s.port = port; }
+                        if !name.is_empty() {
+                            s.name = name;
+                        }
+                        if !host.is_empty() {
+                            s.host = host;
+                        }
+                        if port > 0 {
+                            s.port = port;
+                        }
                         s.tls = tls;
                     }
                     save_config(config, config_path);
@@ -390,28 +452,37 @@ fn handle_dialog_key(
             }
         }
 
-        Dialog::AddCharacter { server_id, inner: d } => {
+        Dialog::AddCharacter {
+            server_id,
+            inner: d,
+        } => {
             let server_id = server_id.clone();
             match text_input(d, key) {
                 TextInputResult::Cancel => true,
                 TextInputResult::Continue => false,
                 TextInputResult::Confirm => {
-                    let name     = d.fields[0].value.trim().to_string();
-                    let login    = d.fields[1].value.trim().to_string();
+                    let name = d.fields[0].value.trim().to_string();
+                    let login = d.fields[1].value.trim().to_string();
                     let password = d.fields[2].value.clone();
-                    let hint     = d.fields[3].value.trim().to_string();
-                    let notes    = d.fields[4].value.trim().to_string();
+                    let hint = d.fields[3].value.trim().to_string();
+                    let notes = d.fields[4].value.trim().to_string();
                     if !name.is_empty() {
                         let mut ch = Character::new(&name, &server_id);
                         // Only persist login if it differs from the display name.
                         if !login.is_empty() && login != name {
                             ch.login = Some(login);
                         }
-                        if !hint.is_empty()  { ch.password_hint = Some(hint);  }
-                        if !notes.is_empty() { ch.notes         = Some(notes); }
+                        if !hint.is_empty() {
+                            ch.password_hint = Some(hint);
+                        }
+                        if !notes.is_empty() {
+                            ch.notes = Some(notes);
+                        }
                         if !password.is_empty() {
                             let effective = ch.effective_login().to_string();
-                            if let Err(e) = config::store_password(&server_id, &effective, &password) {
+                            if let Err(e) =
+                                config::store_password(&server_id, &effective, &password)
+                            {
                                 warn!("Could not store password in keyring: {e}");
                             }
                         }
@@ -434,14 +505,16 @@ fn handle_dialog_key(
                 TextInputResult::Continue => false,
                 TextInputResult::Confirm => {
                     let new_name = d.fields[0].value.trim().to_string();
-                    let login    = d.fields[1].value.trim().to_string();
+                    let login = d.fields[1].value.trim().to_string();
                     let password = d.fields[2].value.clone();
-                    let hint     = d.fields[3].value.trim().to_string();
-                    let notes    = d.fields[4].value.trim().to_string();
+                    let hint = d.fields[3].value.trim().to_string();
+                    let notes = d.fields[4].value.trim().to_string();
                     if let Some(ch) = config.characters.iter_mut().find(|c| c.id == char_id) {
                         let server_id = ch.server_id.clone();
                         let old_login = ch.effective_login().to_string();
-                        if !new_name.is_empty() { ch.name = new_name; }
+                        if !new_name.is_empty() {
+                            ch.name = new_name;
+                        }
                         // Only store a separate login if it actually differs from the name.
                         ch.login = if !login.is_empty() && login != ch.name {
                             Some(login)
@@ -449,10 +522,12 @@ fn handle_dialog_key(
                             None
                         };
                         ch.password_hint = if hint.is_empty() { None } else { Some(hint) };
-                        ch.notes         = if notes.is_empty() { None } else { Some(notes) };
+                        ch.notes = if notes.is_empty() { None } else { Some(notes) };
                         if !password.is_empty() {
                             let new_login = ch.effective_login().to_string();
-                            if let Err(e) = config::store_password(&server_id, &new_login, &password) {
+                            if let Err(e) =
+                                config::store_password(&server_id, &new_login, &password)
+                            {
                                 warn!("Could not update password in keyring: {e}");
                             }
                             // Remove the old keyring entry if the login name changed.
@@ -508,7 +583,12 @@ pub fn handle_key(
 
         // Space / Left / Right → toggle collapse on a server row.
         KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right => {
-            if let Some(TreeRow::Server { server_id, collapsed, .. }) = current {
+            if let Some(TreeRow::Server {
+                server_id,
+                collapsed,
+                ..
+            }) = current
+            {
                 let id = server_id.clone();
                 if *collapsed {
                     state.collapsed.remove(&id);
@@ -520,7 +600,12 @@ pub fn handle_key(
 
         KeyCode::Enter => {
             match current {
-                Some(TreeRow::Server { server_id, collapsed, char_count, .. }) => {
+                Some(TreeRow::Server {
+                    server_id,
+                    collapsed,
+                    char_count,
+                    ..
+                }) => {
                     if *char_count == 0 {
                         // No characters yet — connect directly without a saved character.
                         state.pending_connect = Some((server_id.clone(), None));
@@ -534,7 +619,9 @@ pub fn handle_key(
                         }
                     }
                 }
-                Some(TreeRow::Character { server_id, char_id, .. }) => {
+                Some(TreeRow::Character {
+                    server_id, char_id, ..
+                }) => {
                     state.pending_connect = Some((server_id.clone(), Some(char_id.clone())));
                 }
                 None => {}
@@ -563,11 +650,19 @@ pub fn handle_key(
             state.dialog = match current {
                 Some(TreeRow::Server { server_id, .. }) => {
                     let sid = server_id.clone();
-                    config.servers.iter().find(|s| s.id == sid).map(Dialog::edit_server)
+                    config
+                        .servers
+                        .iter()
+                        .find(|s| s.id == sid)
+                        .map(Dialog::edit_server)
                 }
                 Some(TreeRow::Character { char_id, .. }) => {
                     let cid = char_id.clone();
-                    config.characters.iter().find(|c| c.id == cid).map(Dialog::edit_character)
+                    config
+                        .characters
+                        .iter()
+                        .find(|c| c.id == cid)
+                        .map(Dialog::edit_character)
                 }
                 None => None,
             };
@@ -623,10 +718,16 @@ pub fn draw(frame: &mut Frame, state: &SelectState, config: &Config) {
 
 fn draw_tree(frame: &mut Frame, area: Rect, state: &SelectState, config: &Config) {
     let tree = build_tree(config, &state.collapsed);
-    let selected_idx = if tree.is_empty() { None } else { Some(state.cursor.min(tree.len() - 1)) };
+    let selected_idx = if tree.is_empty() {
+        None
+    } else {
+        Some(state.cursor.min(tree.len() - 1))
+    };
 
-    let highlight_style =
-        Style::default().bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD);
+    let highlight_style = Style::default()
+        .bg(Color::Blue)
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
 
     let items: Vec<ListItem> = if tree.is_empty() {
         vec![ListItem::new(Span::styled(
@@ -636,7 +737,13 @@ fn draw_tree(frame: &mut Frame, area: Rect, state: &SelectState, config: &Config
     } else {
         tree.iter()
             .map(|row| match row {
-                TreeRow::Server { name, collapsed, char_count, server_id, .. } => {
+                TreeRow::Server {
+                    name,
+                    collapsed,
+                    char_count,
+                    server_id,
+                    ..
+                } => {
                     let icon = if *collapsed { "▶ " } else { "▼ " };
                     let tls_badge = if config
                         .servers
@@ -661,7 +768,14 @@ fn draw_tree(frame: &mut Frame, area: Rect, state: &SelectState, config: &Config
                         Span::styled(suffix, Style::default().fg(Color::DarkGray)),
                     ]))
                 }
-                TreeRow::Character { name, login, hint, notes, is_last, .. } => {
+                TreeRow::Character {
+                    name,
+                    login,
+                    hint,
+                    notes,
+                    is_last,
+                    ..
+                } => {
                     let connector = if *is_last { "  └ " } else { "  ├ " };
                     let mut spans = vec![
                         Span::styled(connector, Style::default().fg(Color::DarkGray)),
@@ -741,7 +855,9 @@ fn draw_text_dialog(frame: &mut Frame, area: Rect, d: &TextDialog) {
         if i == d.focused {
             lines.push(Line::styled(
                 content,
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             ));
         } else {
             lines.push(Line::from(content));

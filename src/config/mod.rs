@@ -1,8 +1,34 @@
-// Config module — data model, TOML persistence and OS-keyring credential helpers.
+// Copyright (c) 2026 Raimo Geisel
+// SPDX-License-Identifier: GPL-3.0-only
 //
-// Credential-storage decision: OS keyring via the `keyring` crate.
-// Secrets are never written to the TOML file; the keyring entry key is
-// "<service>/<server_id>/<character_name>" where service = "durthang".
+// Durthang is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free
+// Software Foundation, version 3.  See <https://www.gnu.org/licenses/gpl-3.0.html>.
+
+//! Configuration module — data model, TOML persistence and OS-keyring credential helpers.
+//!
+//! The TOML config file contains the list of [`Server`] entries and their
+//! associated [`Character`] records.  Sensitive credentials (passwords) are
+//! **never** written to the config file; they are stored in the OS keyring via
+//! the [`keyring`] crate.  The keyring entry key follows the pattern
+//! `"durthang/<server_id>/<login_name>"`.
+//!
+//! # Structure
+//!
+//! ```text
+//! Config
+//! ├── servers: Vec<Server>
+//! └── characters: Vec<Character>
+//!     ├── aliases: Vec<Alias>
+//!     ├── triggers: Vec<Trigger>
+//!     └── sidebar: SidebarLayout
+//!         └── panels: Vec<PanelConfig>
+//! ```
+//!
+//! # File location
+//!
+//! Defaults to `$XDG_CONFIG_HOME/durthang/config.toml` (typically
+//! `~/.config/durthang/config.toml`).
 
 use serde::{Deserialize, Serialize};
 use std::{
@@ -41,6 +67,7 @@ pub struct Trigger {
 }
 
 impl Trigger {
+    #[allow(dead_code)]
     pub fn new(pattern: impl Into<String>) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
@@ -56,25 +83,29 @@ impl Trigger {
 // ---------------------------------------------------------------------------
 
 /// Identifies one of the sidebar panels.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PanelKind {
     Automap,
     Notes,
     /// Legacy — silently filtered out when loading old configs.
-    #[doc(hidden)] CharSheet,
+    #[doc(hidden)]
+    CharSheet,
     /// Legacy — silently filtered out when loading old configs.
-    #[doc(hidden)] Paperdoll,
+    #[doc(hidden)]
+    Paperdoll,
     /// Legacy — silently filtered out when loading old configs.
-    #[doc(hidden)] Inventory,
+    #[doc(hidden)]
+    Inventory,
 }
 
 impl PanelKind {
+    #[allow(dead_code)]
     pub fn label(&self) -> &'static str {
         match self {
             PanelKind::Automap => "Automap",
-            PanelKind::Notes   => "Notes",
-            _                  => "Legacy",
+            PanelKind::Notes => "Notes",
+            _ => "Legacy",
         }
     }
 
@@ -82,8 +113,8 @@ impl PanelKind {
     pub fn short_label(&self) -> &'static str {
         match self {
             PanelKind::Automap => "Map",
-            PanelKind::Notes   => "Notes",
-            _                  => "---",
+            PanelKind::Notes => "Notes",
+            _ => "---",
         }
     }
 }
@@ -109,14 +140,33 @@ pub struct PanelConfig {
     pub height_pct: u8,
 }
 
-fn default_panel_height_pct() -> u8  { 50 }
-fn default_right_visible()   -> bool { true }
-fn default_right_width()     -> u16  { 26 }
+/// Default relative height for a panel that does not declare its own value.
+fn default_panel_height_pct() -> u8 {
+    50
+}
+/// Default visibility state of the right sidebar column.
+fn default_right_visible() -> bool {
+    true
+}
+/// Default width in terminal characters of the right sidebar column.
+fn default_right_width() -> u16 {
+    26
+}
 
+/// Return the default panel layout: Automap on the right at 35 % height,
+/// Notes on the right at 65 % height.
 fn default_panels() -> Vec<PanelConfig> {
     vec![
-        PanelConfig { kind: PanelKind::Automap, side: Some(SidebarSide::Right), height_pct: 35 },
-        PanelConfig { kind: PanelKind::Notes,   side: Some(SidebarSide::Right), height_pct: 65 },
+        PanelConfig {
+            kind: PanelKind::Automap,
+            side: Some(SidebarSide::Right),
+            height_pct: 35,
+        },
+        PanelConfig {
+            kind: PanelKind::Notes,
+            side: Some(SidebarSide::Right),
+            height_pct: 65,
+        },
     ]
 }
 
@@ -141,7 +191,7 @@ impl Default for SidebarLayout {
     fn default() -> Self {
         Self {
             right_visible: true,
-            right_width:   26,
+            right_width: 26,
             panels: default_panels(),
             notes: Vec::new(),
         }
@@ -167,6 +217,8 @@ pub struct Server {
 }
 
 impl Server {
+    /// Create a new [`Server`] with a randomly generated UUID id, TLS
+    /// disabled, and all optional fields set to `None`.
     pub fn new(name: impl Into<String>, host: impl Into<String>, port: u16) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
@@ -209,6 +261,9 @@ pub struct Character {
 }
 
 impl Character {
+    /// Create a new [`Character`] with a randomly generated UUID id and all
+    /// optional fields (`login`, `password_hint`, `notes`) set to `None`.
+    /// Aliases and triggers start empty; the sidebar uses its [`Default`] layout.
     pub fn new(name: impl Into<String>, server_id: impl Into<String>) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
@@ -276,6 +331,7 @@ impl Config {
     }
 
     /// Look up a server by id.
+    #[allow(dead_code)]
     pub fn server_by_id(&self, id: &str) -> Option<&Server> {
         self.servers.iter().find(|s| s.id == id)
     }
@@ -293,8 +349,13 @@ impl Config {
 // Keyring helpers
 // ---------------------------------------------------------------------------
 
+/// Service name under which all Durthang credentials are stored in the keyring.
 const KEYRING_SERVICE: &str = "durthang";
 
+/// Build a keyring [`Entry`](keyring::Entry) for the given server/character combination.
+///
+/// The account key is formatted as `"<server_id>/<character_name>"` so that
+/// multiple characters on the same server each get their own entry.
 fn keyring_entry(server_id: &str, character_name: &str) -> keyring::Result<keyring::Entry> {
     let account = format!("{server_id}/{character_name}");
     keyring::Entry::new(KEYRING_SERVICE, &account)
@@ -311,10 +372,7 @@ pub fn store_password(
 
 /// Retrieve the stored password for a character from the OS keyring.
 /// Returns `None` if no entry exists yet.
-pub fn get_password(
-    server_id: &str,
-    character_name: &str,
-) -> keyring::Result<Option<String>> {
+pub fn get_password(server_id: &str, character_name: &str) -> keyring::Result<Option<String>> {
     match keyring_entry(server_id, character_name)?.get_password() {
         Ok(pw) => Ok(Some(pw)),
         Err(keyring::Error::NoEntry) => Ok(None),
@@ -326,4 +384,3 @@ pub fn get_password(
 pub fn delete_password(server_id: &str, character_name: &str) -> keyring::Result<()> {
     keyring_entry(server_id, character_name)?.delete_credential()
 }
-

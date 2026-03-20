@@ -1,17 +1,45 @@
+// Copyright (c) 2026 Raimo Geisel
+// SPDX-License-Identifier: GPL-3.0-only
+//
+// Durthang is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free
+// Software Foundation, version 3.  See <https://www.gnu.org/licenses/gpl-3.0.html>.
+
+//! Durthang — a terminal MUD client.
+//!
+//! This is the binary entry point.  It is responsible for:
+//!
+//! * Parsing CLI arguments via [`clap`].
+//! * Bootstrapping structured file logging with [`tracing_subscriber`].
+//! * Constructing the root [`App`] state and entering raw-mode TUI.
+//! * Running the main event loop ([`run_loop`]) which alternates between
+//!   draining non-blocking network events, redrawing the screen with
+//!   [`ratatui`], and dispatching keyboard/mouse input to the appropriate
+//!   view module.
+//!
+//! The application is structured as a simple state machine driven by
+//! [`AppState`]: it starts on the selection screen and transitions to the
+//! game view once a connection is established.  All long-running I/O lives
+//! in a background Tokio task ([`net`] module) and communicates with the
+//! UI thread via bounded MPSC channels.
+
 mod app;
 mod config;
 mod map;
 mod net;
 mod ui;
+#[cfg(test)]
+mod tests;
 
 use app::{App, AppState};
 use clap::Parser;
 use config::Config;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers,
-            MouseEventKind},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseEventKind,
+    },
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use net::{Connection, NetEvent};
 use ratatui::prelude::*;
@@ -23,6 +51,10 @@ use ui::game::GameAction;
 // CLI
 // ---------------------------------------------------------------------------
 
+/// Command-line interface definition for Durthang.
+///
+/// Parsed by [`clap`] before the TUI is initialised so that `--help` and
+/// `--version` work without entering raw mode.
 #[derive(Parser)]
 #[command(version, about = "Durthang — a terminal MUD client")]
 struct Cli {
@@ -37,6 +69,11 @@ struct Cli {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Return the application data directory (`$XDG_DATA_HOME/durthang` or
+/// `~/.local/share/durthang` when the environment variable is absent).
+///
+/// The directory is used for the log file and per-server map JSON files.
+/// It is *not* created here; callers are responsible for that.
 fn data_dir() -> PathBuf {
     let base = std::env::var("XDG_DATA_HOME")
         .map(PathBuf::from)
@@ -47,6 +84,13 @@ fn data_dir() -> PathBuf {
     base.join("durthang")
 }
 
+/// Initialise structured logging for the lifetime of the process.
+///
+/// A log file is created at `<data_dir>/durthang.log` (previous contents are
+/// overwritten on each run).  The log level is read from the `RUST_LOG`
+/// environment variable and falls back to `info`.
+///
+/// No logs are written to stderr so as not to interfere with the TUI output.
 fn init_logging() -> io::Result<()> {
     let dir = data_dir();
     fs::create_dir_all(&dir)?;
@@ -63,6 +107,9 @@ fn init_logging() -> io::Result<()> {
 }
 
 /// Query the current terminal size and return `(cols, rows)`.
+///
+/// Falls back to `(80, 24)` when the underlying `ioctl` is unavailable
+/// (e.g. when stdout is redirected).
 fn terminal_size() -> (u16, u16) {
     crossterm::terminal::size().unwrap_or((80, 24))
 }
@@ -71,6 +118,15 @@ fn terminal_size() -> (u16, u16) {
 // Entry point
 // ---------------------------------------------------------------------------
 
+/// Binary entry point.
+///
+/// Performs the following steps in order:
+/// 1. Parse CLI arguments.
+/// 2. Initialise file logging.
+/// 3. Load (or create) the TOML configuration file.
+/// 4. Set the terminal to raw mode and enter the alternate screen.
+/// 5. Hand off to [`run_loop`] inside a blocking Tokio runtime.
+/// 6. Restore the terminal to its previous state before exiting.
 fn main() -> io::Result<()> {
     let cli = Cli::parse();
     let config_path = cli.config.unwrap_or_else(Config::default_path);
@@ -102,7 +158,11 @@ fn main() -> io::Result<()> {
 
     info!("Durthang shutting down");
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
     Ok(())
 }
 
@@ -110,6 +170,15 @@ fn main() -> io::Result<()> {
 // Main async loop
 // ---------------------------------------------------------------------------
 
+/// Main async event loop.
+///
+/// Each iteration:
+/// 1. Drains all pending network events via [`drain_net_events`] (non-blocking).
+/// 2. Redraws the TUI with [`ratatui`].
+/// 3. Waits up to 100 ms for the next crossterm event.
+/// 4. Dispatches the event to the appropriate view handler.
+///
+/// The loop exits when [`App::running`] is set to `false`.
 async fn run_loop(app: &mut App, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) {
     loop {
         // Drain non-blocking net events before drawing.
@@ -140,7 +209,7 @@ async fn run_loop(app: &mut App, terminal: &mut Terminal<CrosstermBackend<io::St
             Event::Mouse(mouse) => {
                 if matches!(app.state, AppState::Game) {
                     match mouse.kind {
-                        MouseEventKind::ScrollUp   => app.game.scroll_up(3),
+                        MouseEventKind::ScrollUp => app.game.scroll_up(3),
                         MouseEventKind::ScrollDown => app.game.scroll_down(3),
                         _ => {}
                     }
@@ -148,9 +217,7 @@ async fn run_loop(app: &mut App, terminal: &mut Terminal<CrosstermBackend<io::St
             }
             Event::Key(key) => {
                 // Global Ctrl-C always quits.
-                if key.modifiers.contains(KeyModifiers::CONTROL)
-                    && key.code == KeyCode::Char('c')
-                {
+                if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
                     if let Some(conn) = &app.connection {
                         conn.disconnect().await;
                     }
@@ -208,7 +275,11 @@ async fn run_loop(app: &mut App, terminal: &mut Terminal<CrosstermBackend<io::St
                             Some(GameAction::RemoveAlias(name)) => {
                                 game_remove_alias(app, name);
                             }
-                            Some(GameAction::AddTrigger { pattern, color, send }) => {
+                            Some(GameAction::AddTrigger {
+                                pattern,
+                                color,
+                                send,
+                            }) => {
                                 game_add_trigger(app, pattern, color, send);
                             }
                             Some(GameAction::RemoveTrigger(id_prefix)) => {
@@ -242,6 +313,11 @@ async fn run_loop(app: &mut App, terminal: &mut Terminal<CrosstermBackend<io::St
 // Net event draining
 // ---------------------------------------------------------------------------
 
+/// Drain all currently available [`NetEvent`]s from the connection's channel.
+///
+/// This is called before each frame draw to ensure the scrollback buffer and
+/// the automap are up to date.  The function returns immediately if there is
+/// no active connection.
 fn drain_net_events(app: &mut App) {
     let conn = match app.connection.as_mut() {
         Some(c) => c,
@@ -289,6 +365,14 @@ fn drain_net_events(app: &mut App) {
 // Connect helper
 // ---------------------------------------------------------------------------
 
+/// Establish a new [`Connection`] to the server identified by `server_id`.
+///
+/// If `char_id` is `Some`, the corresponding character's aliases, triggers,
+/// and sidebar layout are loaded from the config and the credential stored in
+/// the OS keyring is used for auto-login.  Passing `None` opens an
+/// unauthenticated session without any character-specific configuration.
+///
+/// On success the application state transitions to [`AppState::Game`].
 async fn do_connect(app: &mut App, server_id: &str, char_id: Option<&str>) {
     let server = match app.config.servers.iter().find(|s| s.id == server_id) {
         Some(s) => s.clone(),
@@ -302,7 +386,10 @@ async fn do_connect(app: &mut App, server_id: &str, char_id: Option<&str>) {
     let (char_name, auto_login, char_id_owned) = if let Some(cid) = char_id {
         match app.config.characters.iter().find(|c| c.id == cid) {
             Some(c) => {
-                info!("Connecting to {} ({}) as {}", server.name, server.host, c.name);
+                info!(
+                    "Connecting to {} ({}) as {}",
+                    server.name, server.host, c.name
+                );
                 let login = c.effective_login().to_string();
                 let password = config::get_password(&server.id, &login).unwrap_or(None);
                 let auto_login = if c.login.is_some() || password.is_some() {
@@ -318,18 +405,27 @@ async fn do_connect(app: &mut App, server_id: &str, char_id: Option<&str>) {
             }
         }
     } else {
-        info!("Connecting to {} ({}) without a saved character", server.name, server.host);
+        info!(
+            "Connecting to {} ({}) without a saved character",
+            server.name, server.host
+        );
         (String::from("(anonymous)"), None, None)
     };
 
     let size = terminal_size();
-    let conn = Connection::spawn(server.host.clone(), server.port, server.tls, auto_login, size);
+    let conn = Connection::spawn(
+        server.host.clone(),
+        server.port,
+        server.tls,
+        auto_login,
+        size,
+    );
 
-    app.connection     = Some(conn);
-    app.connected_server   = Some(server.name.clone());
+    app.connection = Some(conn);
+    app.connected_server = Some(server.name.clone());
     app.connected_server_id = Some(server.id.clone());
-    app.connected_char     = Some(char_name);
-    app.connected_char_id  = char_id_owned;
+    app.connected_char = Some(char_name);
+    app.connected_char_id = char_id_owned;
     // Clear the game view for the new session and mark as connected.
     app.game = crate::ui::game::GameState::new();
     app.game.on_connect();
@@ -359,48 +455,79 @@ async fn do_connect(app: &mut App, server_id: &str, char_id: Option<&str>) {
 // In-game config mutation helpers
 // ---------------------------------------------------------------------------
 
+/// Persist the current [`Config`] to disk, logging a warning on failure.
+///
+/// Errors are intentionally swallowed here because config saves happen as
+/// a side-effect of in-game commands; a failure should not crash the session.
 fn save_config_quiet(app: &App) {
     if let Err(e) = app.config.save(&app.config_path) {
         tracing::warn!("Failed to save config: {e}");
     }
 }
 
+/// Persist the automap for the currently connected server to disk.
+///
+/// Like [`save_config_quiet`] this silently logs and swallows I/O errors.
+/// No-op when no server is connected.
 fn save_map_quiet(app: &App) {
-    let Some(server_id) = app.connected_server_id.as_deref() else { return };
+    let Some(server_id) = app.connected_server_id.as_deref() else {
+        return;
+    };
     if let Err(e) = crate::map::save_server_map(server_id, &app.game.sidebar.automap) {
         tracing::warn!("Failed to save map for server {server_id}: {e}");
     }
 }
 
+/// Copy the in-memory sidebar layout back to the active character's config entry
+/// and persist the config to disk.
 fn save_sidebar_layout(app: &mut App) {
-    let Some(cid) = app.connected_char_id.clone() else { return };
+    let Some(cid) = app.connected_char_id.clone() else {
+        return;
+    };
     if let Some(ch) = app.config.characters.iter_mut().find(|c| c.id == cid) {
         ch.sidebar = app.game.sidebar.layout.clone();
     }
     save_config_quiet(app);
 }
 
+/// Add or replace an alias for the currently connected character and persist
+/// the change.  The updated alias list is immediately reflected in the live
+/// session.
 fn game_add_alias(app: &mut App, name: String, expansion: String) {
-    let Some(cid) = app.connected_char_id.clone() else { return };
+    let Some(cid) = app.connected_char_id.clone() else {
+        return;
+    };
     if let Some(ch) = app.config.characters.iter_mut().find(|c| c.id == cid) {
         ch.aliases.retain(|a| a.name != name);
-        ch.aliases.push(config::Alias { name: name.clone(), expansion: expansion.clone() });
+        ch.aliases.push(config::Alias {
+            name: name.clone(),
+            expansion: expansion.clone(),
+        });
     }
     save_config_quiet(app);
     // Sync updated list back to game state.
     if let Some(ch) = app.config.characters.iter().find(|c| c.id == cid) {
         app.game.set_aliases(ch.aliases.clone());
-        app.game.push_system(&format!("Alias added: {} \u{2192} {}", name, expansion));
+        app.game
+            .push_system(&format!("Alias added: {} \u{2192} {}", name, expansion));
     }
 }
 
+/// Remove an alias by exact name for the currently connected character.
+///
+/// Emits an in-game system message confirming removal (or noting that the
+/// alias was not found).
 fn game_remove_alias(app: &mut App, name: String) {
-    let Some(cid) = app.connected_char_id.clone() else { return };
+    let Some(cid) = app.connected_char_id.clone() else {
+        return;
+    };
     let removed = if let Some(ch) = app.config.characters.iter_mut().find(|c| c.id == cid) {
         let before = ch.aliases.len();
         ch.aliases.retain(|a| a.name != name);
         ch.aliases.len() < before
-    } else { false };
+    } else {
+        false
+    };
     if removed {
         save_config_quiet(app);
         if let Some(ch) = app.config.characters.iter().find(|c| c.id == cid) {
@@ -412,13 +539,16 @@ fn game_remove_alias(app: &mut App, name: String) {
     }
 }
 
-fn game_add_trigger(
-    app: &mut App,
-    pattern: String,
-    color: Option<String>,
-    send: Option<String>,
-) {
-    let Some(cid) = app.connected_char_id.clone() else { return };
+/// Validate and add a trigger rule for the currently connected character.
+///
+/// The regex `pattern` is compiled before storing to provide immediate
+/// feedback on syntax errors via an in-game system message.  On success the
+/// trigger is appended to the character config, persisted to disk, and
+/// immediately activated in the live session.
+fn game_add_trigger(app: &mut App, pattern: String, color: Option<String>, send: Option<String>) {
+    let Some(cid) = app.connected_char_id.clone() else {
+        return;
+    };
     // Validate regex before storing.
     if let Err(e) = regex::Regex::new(&pattern) {
         app.game.push_system(&format!("Invalid regex pattern: {e}"));
@@ -437,25 +567,36 @@ fn game_add_trigger(
     save_config_quiet(app);
     if let Some(ch) = app.config.characters.iter().find(|c| c.id == cid) {
         app.game.set_triggers(ch.triggers.clone());
-        app.game.push_system(&format!("Trigger [{id_short}] added."));
+        app.game
+            .push_system(&format!("Trigger [{id_short}] added."));
     }
 }
 
+/// Remove all trigger rules whose id starts with `id_prefix`.
+///
+/// Intended to be called with the first 8 characters of a UUID as displayed
+/// by `/trigger list`.  Emits an in-game system message on success or failure.
 fn game_remove_trigger(app: &mut App, id_prefix: String) {
-    let Some(cid) = app.connected_char_id.clone() else { return };
+    let Some(cid) = app.connected_char_id.clone() else {
+        return;
+    };
     let removed = if let Some(ch) = app.config.characters.iter_mut().find(|c| c.id == cid) {
         let before = ch.triggers.len();
         ch.triggers.retain(|t| !t.id.starts_with(&id_prefix));
         ch.triggers.len() < before
-    } else { false };
+    } else {
+        false
+    };
     if removed {
         save_config_quiet(app);
         if let Some(ch) = app.config.characters.iter().find(|c| c.id == cid) {
             app.game.set_triggers(ch.triggers.clone());
         }
-        app.game.push_system(&format!("Trigger '{}...' removed.", id_prefix));
+        app.game
+            .push_system(&format!("Trigger '{}...' removed.", id_prefix));
     } else {
-        app.game.push_system(&format!("No trigger with id prefix '{}'.", id_prefix));
+        app.game
+            .push_system(&format!("No trigger with id prefix '{}'.", id_prefix));
     }
 }
 
@@ -477,11 +618,19 @@ fn base64_encode(data: &[u8]) -> String {
         let b0 = chunk[0] as u32;
         let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
         let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
-        let v  = (b0 << 16) | (b1 << 8) | b2;
+        let v = (b0 << 16) | (b1 << 8) | b2;
         out.push(T[((v >> 18) & 0x3F) as usize] as char);
         out.push(T[((v >> 12) & 0x3F) as usize] as char);
-        out.push(if chunk.len() >= 2 { T[((v >> 6) & 0x3F) as usize] as char } else { '=' });
-        out.push(if chunk.len() >= 3 { T[(v & 0x3F) as usize] as char       } else { '=' });
+        out.push(if chunk.len() >= 2 {
+            T[((v >> 6) & 0x3F) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() >= 3 {
+            T[(v & 0x3F) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }

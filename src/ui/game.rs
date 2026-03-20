@@ -1,3 +1,10 @@
+// Copyright (c) 2026 Raimo Geisel
+// SPDX-License-Identifier: GPL-3.0-only
+//
+// Durthang is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free
+// Software Foundation, version 3.  See <https://www.gnu.org/licenses/gpl-3.0.html>.
+
 //! Game view — the main screen shown while connected to a MUD server.
 //!
 //! Layout:
@@ -12,14 +19,14 @@
 use std::collections::VecDeque;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use regex::Regex;
 use ratatui::{
+    Frame,
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Clear, Paragraph, Wrap},
-    Frame,
 };
+use regex::Regex;
 use tracing::warn;
 
 use crate::config::{Alias, SidebarSide, Trigger as TriggerCfg};
@@ -46,7 +53,11 @@ pub enum GameAction {
     /// Delete an alias by name.
     RemoveAlias(String),
     /// Persist a new trigger for the connected character.
-    AddTrigger { pattern: String, color: Option<String>, send: Option<String> },
+    AddTrigger {
+        pattern: String,
+        color: Option<String>,
+        send: Option<String>,
+    },
     /// Delete a trigger whose id starts with the given prefix.
     RemoveTrigger(String),
     /// The sidebar layout was changed and should be persisted to the character config.
@@ -77,6 +88,16 @@ const LATENCY_AVG_SAMPLES: usize = 8;
 // GameState
 // ---------------------------------------------------------------------------
 
+/// All mutable state for the active game view.
+///
+/// `GameState` is created once per connection inside [`crate::main`] and kept
+/// alive until the session ends.  It owns:
+/// * The scrollback buffer and the current scroll position.
+/// * The input line and its cursor, plus the sent-command history.
+/// * A rolling latency measurement updated from [`crate::net::NetEvent::Latency`].
+/// * Compiled trigger and alias lists loaded from [`crate::config`].
+/// * A queue of lines to auto-send (populated by trigger `send` actions).
+/// * The [`SidebarState`] (automap world, notes, focus).
 pub struct GameState {
     /// Decoded + ANSI-parsed scrollback lines.
     pub lines: VecDeque<Line<'static>>,
@@ -120,6 +141,7 @@ pub struct GameState {
 }
 
 impl GameState {
+    /// Create a new, empty [`GameState`] ready for a fresh connection.
     pub fn new() -> Self {
         Self {
             lines: VecDeque::new(),
@@ -188,14 +210,17 @@ impl GameState {
         self.scroll_offset = self.scroll_offset.saturating_add(n).min(max);
     }
 
+    /// Scroll the output view down by `n` logical lines toward the live view.
     pub fn scroll_down(&mut self, n: usize) {
         self.scroll_offset = self.scroll_offset.saturating_sub(n);
     }
 
+    /// Jump the output view to the live bottom.
     pub fn scroll_to_bottom(&mut self) {
         self.scroll_offset = 0;
     }
 
+    /// Jump the output view to the oldest retained line.
     pub fn scroll_to_top(&mut self) {
         self.scroll_offset = self.lines.len().saturating_sub(1);
     }
@@ -271,7 +296,12 @@ impl GameState {
 
         // Echo into scrollback.
         let echo = Line::from(vec![
-            Span::styled("▶ ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "▶ ",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(line.clone()),
         ]);
         self.lines.push_back(echo);
@@ -286,6 +316,10 @@ impl GameState {
     // Reset on new connection
     // ------------------------------------------------------------------
 
+    /// Reset game state at the start of a new connection.
+    ///
+    /// Marks the session as connected, clears latency samples and the
+    /// fullscreen map state, and scrolls to the live bottom.
     pub fn on_connect(&mut self) {
         self.connected = true;
         self.latency = None;
@@ -296,6 +330,11 @@ impl GameState {
         self.prompt = None;
     }
 
+    /// Update state when the connection is lost.
+    ///
+    /// Marks the session as disconnected and clears latency samples and the
+    /// fullscreen map toggle.  The scrollback buffer is retained so the user
+    /// can review the last output before reconnecting.
     pub fn on_disconnect(&mut self) {
         self.connected = false;
         self.latency = None;
@@ -304,6 +343,10 @@ impl GameState {
         self.map_pan = (0, 0, 0);
     }
 
+    /// Record a new latency sample and update the rolling average window.
+    ///
+    /// The latest raw value is stored in `latency`; the window used for the
+    /// rolling average is capped at [`LATENCY_AVG_SAMPLES`] entries.
     pub fn record_latency(&mut self, ms: u64) {
         self.latency = Some(ms);
         self.latency_samples.push_back(ms);
@@ -312,6 +355,8 @@ impl GameState {
         }
     }
 
+    /// Compute the rolling average of the last [`LATENCY_AVG_SAMPLES`] latency
+    /// measurements.  Returns `None` if no samples have been recorded yet.
     fn latency_avg(&self) -> Option<u64> {
         if self.latency_samples.is_empty() {
             return None;
@@ -325,6 +370,10 @@ impl GameState {
     // Aliases & triggers
     // ------------------------------------------------------------------
 
+    /// Update the alias list for the current session.
+    ///
+    /// The entire list is replaced atomically so that add/remove operations
+    /// performed via [`GameAction`] are always consistent.
     pub fn set_aliases(&mut self, aliases: Vec<Alias>) {
         self.aliases = aliases;
     }
@@ -349,7 +398,16 @@ impl GameState {
             .collect();
     }
 
-    fn expand_alias(&self, line: &str) -> String {
+    /// Expand an alias in the given `line`.
+    ///
+    /// Resolution order:
+    /// 1. **Exact-line match**: if any alias `name` equals the entire `line`,
+    ///    return its expansion verbatim.
+    /// 2. **First-word match**: if any alias `name` equals the first whitespace-
+    ///    delimited token, replace that token with the expansion and append the
+    ///    remainder of the line.
+    /// 3. **No match**: return `line` unchanged.
+    pub(crate) fn expand_alias(&self, line: &str) -> String {
         // Exact-line match first, then first-word match (with tail appended).
         if let Some(a) = self.aliases.iter().find(|a| a.name == line) {
             return a.expansion.clone();
@@ -391,24 +449,30 @@ impl GameState {
 
         match cmd.to_lowercase().as_str() {
             "disconnect" | "disc" => Some(GameAction::Disconnect),
-            "quit" | "exit"      => Some(GameAction::Quit),
+            "quit" | "exit" => Some(GameAction::Quit),
 
             // ------ Sidebar visibility (/sidebar) ----------------------------
-            "sidebar" | "sb" => {
-                match args {
-                    "right" | "r" => {
-                        self.sidebar.toggle_right();
-                        let st = if self.sidebar.layout.right_visible { "shown" } else { "hidden" };
-                        self.push_system(&format!("Right sidebar {st}."));
-                        Some(GameAction::SaveSidebarLayout)
-                    }
-                    _ => {
-                        let r = if self.sidebar.layout.right_visible { "shown" } else { "hidden" };
-                        self.push_system(&format!("Right sidebar: {r}  /sidebar right to toggle"));
-                        None
-                    }
+            "sidebar" | "sb" => match args {
+                "right" | "r" => {
+                    self.sidebar.toggle_right();
+                    let st = if self.sidebar.layout.right_visible {
+                        "shown"
+                    } else {
+                        "hidden"
+                    };
+                    self.push_system(&format!("Right sidebar {st}."));
+                    Some(GameAction::SaveSidebarLayout)
                 }
-            }
+                _ => {
+                    let r = if self.sidebar.layout.right_visible {
+                        "shown"
+                    } else {
+                        "hidden"
+                    };
+                    self.push_system(&format!("Right sidebar: {r}  /sidebar right to toggle"));
+                    None
+                }
+            },
 
             // ------ Automap controls (/map) ---------------------------------
             "map" => {
@@ -441,7 +505,9 @@ impl GameState {
                             return None;
                         }
                         let room_id = if parts[0] == "current" {
-                            self.sidebar.map_current_room_id().unwrap_or_else(|| "current".to_string())
+                            self.sidebar
+                                .map_current_room_id()
+                                .unwrap_or_else(|| "current".to_string())
                         } else {
                             parts[0].to_string()
                         };
@@ -457,7 +523,9 @@ impl GameState {
                                 self.sidebar.map_set_position(&room_id, x, y, z);
                                 self.push_system(&format!("Map: set {room_id} -> ({x}, {y}, {z})"));
                             }
-                            _ => self.push_system("Usage: /map setpos <room_id|current> <x> <y> [z]"),
+                            _ => {
+                                self.push_system("Usage: /map setpos <room_id|current> <x> <y> [z]")
+                            }
                         }
                         None
                     }
@@ -478,7 +546,9 @@ impl GameState {
                             return None;
                         }
                         let from_id = if parts[0] == "current" {
-                            self.sidebar.map_current_room_id().unwrap_or_else(|| "current".to_string())
+                            self.sidebar
+                                .map_current_room_id()
+                                .unwrap_or_else(|| "current".to_string())
                         } else {
                             parts[0].to_string()
                         };
@@ -488,7 +558,10 @@ impl GameState {
                         };
                         let to_id = parts[2].to_string();
                         self.sidebar.map_link_rooms(&from_id, dir, &to_id);
-                        self.push_system(&format!("Map: linked {from_id} --{}--> {to_id}", dir.as_str()));
+                        self.push_system(&format!(
+                            "Map: linked {from_id} --{}--> {to_id}",
+                            dir.as_str()
+                        ));
                         None
                     }
                     _ => {
@@ -504,18 +577,23 @@ impl GameState {
                         self.push_system("No aliases defined.  Usage: /alias <name> <expansion>");
                     } else {
                         self.push_system("Aliases:");
-                        let msgs: Vec<String> = self.aliases.iter()
+                        let msgs: Vec<String> = self
+                            .aliases
+                            .iter()
                             .map(|a| format!("  {} \u{2192} {}", a.name, a.expansion))
                             .collect();
-                        for m in msgs { self.push_system(&m); }
+                        for m in msgs {
+                            self.push_system(&m);
+                        }
                     }
                     None
                 } else {
                     match args.split_once(' ') {
                         None => {
                             match self.aliases.iter().find(|a| a.name == args) {
-                                Some(a) => self.push_system(&format!("  {} \u{2192} {}", a.name, a.expansion)),
-                                None    => self.push_system(&format!("No alias named '{args}'."),),
+                                Some(a) => self
+                                    .push_system(&format!("  {} \u{2192} {}", a.name, a.expansion)),
+                                None => self.push_system(&format!("No alias named '{args}'.")),
                             }
                             None
                         }
@@ -548,22 +626,34 @@ impl GameState {
                             self.push_system("No triggers defined.  Usage: /trigger add <pattern> [color=NAME] [send=CMD]");
                         } else {
                             self.push_system("Triggers:");
-                            let items: Vec<String> = self.triggers.iter().map(|t| {
-                                let id_short = &t.id[..8.min(t.id.len())];
-                                let send = t.send.as_deref().unwrap_or("-");
-                                format!("  [{id_short}]  /{}/ send={send}", t.regex.as_str())
-                            }).collect();
-                            for s in items { self.push_system(&s); }
+                            let items: Vec<String> = self
+                                .triggers
+                                .iter()
+                                .map(|t| {
+                                    let id_short = &t.id[..8.min(t.id.len())];
+                                    let send = t.send.as_deref().unwrap_or("-");
+                                    format!("  [{id_short}]  /{}/ send={send}", t.regex.as_str())
+                                })
+                                .collect();
+                            for s in items {
+                                self.push_system(&s);
+                            }
                         }
                         None
                     }
                     "add" => {
                         if rest.is_empty() {
-                            self.push_system("Usage: /trigger add <pattern> [color=NAME] [send=CMD]");
+                            self.push_system(
+                                "Usage: /trigger add <pattern> [color=NAME] [send=CMD]",
+                            );
                             None
                         } else {
                             let (pattern, color, send) = parse_trigger_args(rest);
-                            Some(GameAction::AddTrigger { pattern, color, send })
+                            Some(GameAction::AddTrigger {
+                                pattern,
+                                color,
+                                send,
+                            })
                         }
                     }
                     "del" | "rm" | "remove" | "delete" => {
@@ -583,7 +673,9 @@ impl GameState {
 
             _ => {
                 self.push_system(&format!("Unknown command: {input}"));
-                self.push_system("  Available: /alias, /unalias, /trigger, /sidebar, /map, /disconnect, /quit");
+                self.push_system(
+                    "  Available: /alias, /unalias, /trigger, /sidebar, /map, /disconnect, /quit",
+                );
                 None
             }
         }
@@ -654,7 +746,8 @@ fn ansi_to_line(input: &str) -> Line<'static> {
                 // Charset-designation sequences have one additional designator byte.
                 // Don't consume the next byte if it is ESC — that starts a
                 // new escape sequence and must not be swallowed as a charset code.
-                if matches!(next, b'(' | b')' | b'*' | b'+') && i < bytes.len() && bytes[i] != 0x1b {
+                if matches!(next, b'(' | b')' | b'*' | b'+') && i < bytes.len() && bytes[i] != 0x1b
+                {
                     i += 1; // skip the charset code (e.g. 'B', '0', 'U', …)
                 }
             }
@@ -847,7 +940,10 @@ pub fn handle_key(state: &mut GameState, key: KeyEvent) -> Option<GameAction> {
     // When a sidebar panel is focused, route input there.
     if state.sidebar.focused_panel.is_some() {
         return match sidebar::handle_sidebar_key(&mut state.sidebar, key) {
-            SidebarKeyResult::FocusGame  => { state.sidebar.focused_panel = None; None }
+            SidebarKeyResult::FocusGame => {
+                state.sidebar.focused_panel = None;
+                None
+            }
             SidebarKeyResult::SaveLayout => Some(GameAction::SaveSidebarLayout),
             SidebarKeyResult::Consumed | SidebarKeyResult::Unhandled => None,
         };
@@ -1004,24 +1100,48 @@ fn handle_copy_mode(state: &mut GameState, key: KeyEvent) -> Option<GameAction> 
             state.copy_mode = false;
             None
         }
-        KeyCode::Up                 => { state.scroll_up(1);  None }
-        KeyCode::Down               => { state.scroll_down(1); None }
-        KeyCode::PageUp             => { let n = state.last_output_height.max(1); state.scroll_up(n); None }
-        KeyCode::PageDown           => { let n = state.last_output_height.max(1); state.scroll_down(n); None }
-        KeyCode::Home if ctrl       => { state.scroll_to_top(); None }
-        KeyCode::End  if ctrl       => { state.scroll_to_bottom(); None }
-        KeyCode::Char('y')          => {
+        KeyCode::Up => {
+            state.scroll_up(1);
+            None
+        }
+        KeyCode::Down => {
+            state.scroll_down(1);
+            None
+        }
+        KeyCode::PageUp => {
+            let n = state.last_output_height.max(1);
+            state.scroll_up(n);
+            None
+        }
+        KeyCode::PageDown => {
+            let n = state.last_output_height.max(1);
+            state.scroll_down(n);
+            None
+        }
+        KeyCode::Home if ctrl => {
+            state.scroll_to_top();
+            None
+        }
+        KeyCode::End if ctrl => {
+            state.scroll_to_bottom();
+            None
+        }
+        KeyCode::Char('y') => {
             // Yank (copy) the bottom-most visible line.
             let buf_len = state.lines.len();
-            let scroll  = state.scroll_offset.min(buf_len.saturating_sub(1));
-            let idx     = buf_len.saturating_sub(1 + scroll);
+            let scroll = state.scroll_offset.min(buf_len.saturating_sub(1));
+            let idx = buf_len.saturating_sub(1 + scroll);
             let text: String = state
                 .lines
                 .get(idx)
                 .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
                 .unwrap_or_default();
             state.copy_mode = false;
-            if text.is_empty() { None } else { Some(GameAction::CopyToClipboard(text)) }
+            if text.is_empty() {
+                None
+            } else {
+                Some(GameAction::CopyToClipboard(text))
+            }
         }
         _ => None,
     }
@@ -1071,32 +1191,32 @@ fn handle_map_fullscreen_mode(state: &mut GameState, key: KeyEvent) -> Option<Ga
 
 fn parse_color_name(name: &str) -> Option<Color> {
     match name.to_lowercase().as_str() {
-        "black"                    => Some(Color::Black),
-        "red"                      => Some(Color::Red),
-        "green"                    => Some(Color::Green),
-        "yellow"                   => Some(Color::Yellow),
-        "blue"                     => Some(Color::Blue),
-        "magenta"                  => Some(Color::Magenta),
-        "cyan"                     => Some(Color::Cyan),
-        "gray" | "grey"            => Some(Color::Gray),
-        "dark_gray" | "darkgray"   => Some(Color::DarkGray),
-        "light_red"                => Some(Color::LightRed),
-        "light_green"              => Some(Color::LightGreen),
-        "light_yellow"             => Some(Color::LightYellow),
-        "light_blue"               => Some(Color::LightBlue),
-        "light_magenta"            => Some(Color::LightMagenta),
-        "light_cyan"               => Some(Color::LightCyan),
-        "white"                    => Some(Color::White),
-        _                          => None,
+        "black" => Some(Color::Black),
+        "red" => Some(Color::Red),
+        "green" => Some(Color::Green),
+        "yellow" => Some(Color::Yellow),
+        "blue" => Some(Color::Blue),
+        "magenta" => Some(Color::Magenta),
+        "cyan" => Some(Color::Cyan),
+        "gray" | "grey" => Some(Color::Gray),
+        "dark_gray" | "darkgray" => Some(Color::DarkGray),
+        "light_red" => Some(Color::LightRed),
+        "light_green" => Some(Color::LightGreen),
+        "light_yellow" => Some(Color::LightYellow),
+        "light_blue" => Some(Color::LightBlue),
+        "light_magenta" => Some(Color::LightMagenta),
+        "light_cyan" => Some(Color::LightCyan),
+        "white" => Some(Color::White),
+        _ => None,
     }
 }
 
 /// Parse `color=NAME` and `send=CMD` key=value suffixes from a trigger add string.
 /// Returns (pattern, color, send).
 fn parse_trigger_args(s: &str) -> (String, Option<String>, Option<String>) {
-    let mut rest  = s.to_string();
+    let mut rest = s.to_string();
     let mut color = None;
-    let mut send  = None;
+    let mut send = None;
 
     // `send=` is parsed first because it may contain spaces (consumed to end).
     if let Some(idx) = find_kv(&rest, "send") {
@@ -1104,8 +1224,13 @@ fn parse_trigger_args(s: &str) -> (String, Option<String>, Option<String>) {
         rest = rest[..idx].trim().to_string();
     }
     if let Some(idx) = find_kv(&rest, "color") {
-        let val: &str = rest[idx + "color=".len()..].split_whitespace().next().unwrap_or("");
-        if !val.is_empty() { color = Some(val.to_string()); }
+        let val: &str = rest[idx + "color=".len()..]
+            .split_whitespace()
+            .next()
+            .unwrap_or("");
+        if !val.is_empty() {
+            color = Some(val.to_string());
+        }
         rest = rest[..idx].trim().to_string();
     }
 
@@ -1115,11 +1240,18 @@ fn parse_trigger_args(s: &str) -> (String, Option<String>, Option<String>) {
 /// Find the byte position of `key=` in `s`, only at a word boundary.
 fn find_kv(s: &str, key: &str) -> Option<usize> {
     let needle = format!("{key}=");
-    if s.starts_with(&needle) { return Some(0); }
+    if s.starts_with(&needle) {
+        return Some(0);
+    }
     s.rfind(&format!(" {needle}")).map(|p| p + 1)
 }
 
-fn build_map_lines(map: &WorldMap, width: u16, height: u16, pan: (i32, i32, i32)) -> Vec<Line<'static>> {
+fn build_map_lines(
+    map: &WorldMap,
+    width: u16,
+    height: u16,
+    pan: (i32, i32, i32),
+) -> Vec<Line<'static>> {
     if width == 0 || height == 0 {
         return Vec::new();
     }
@@ -1137,13 +1269,16 @@ fn build_map_lines(map: &WorldMap, width: u16, height: u16, pan: (i32, i32, i32)
             let wx = cur.x + pan.0 + (sx - half_w);
             let wy = cur.y + pan.1 + (sy - half_h);
             if let Some(room) = map.room_at(wx, wy, z) {
-                rows[sy as usize][sx as usize] = if room.id == cur.id && z == cur.z { '@' } else { '.' };
+                rows[sy as usize][sx as usize] = if room.id == cur.id && z == cur.z {
+                    '@'
+                } else {
+                    '.'
+                };
             }
         }
     }
 
-    rows
-        .into_iter()
+    rows.into_iter()
         .map(|r| Line::raw(r.into_iter().collect::<String>()))
         .collect()
 }
@@ -1156,38 +1291,35 @@ pub fn draw(frame: &mut Frame, state: &mut GameState, server_name: &str, char_na
     let area = frame.area();
 
     // Top-level vertical split: [content area | status bar (1 row)]
-    let [content_area, status_area] = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(1),
-    ])
-    .areas(area);
+    let [content_area, status_area] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
 
     // Horizontal split: game column | optional right sidebar.
-    let has_right  = state.sidebar.has_side_panels(&SidebarSide::Right);
+    let has_right = state.sidebar.has_side_panels(&SidebarSide::Right);
     let show_right = has_right && state.sidebar.layout.right_visible;
 
     const MIN_GAME_W: u16 = 20;
     let right_w = if show_right {
-        state.sidebar.layout.right_width
+        state
+            .sidebar
+            .layout
+            .right_width
             .min(content_area.width.saturating_sub(MIN_GAME_W))
-    } else { 0 };
+    } else {
+        0
+    };
 
     let (game_col, right_area_opt) = if right_w > 0 {
-        let c = Layout::horizontal([
-            Constraint::Fill(1),
-            Constraint::Length(right_w),
-        ]).split(content_area);
+        let c = Layout::horizontal([Constraint::Fill(1), Constraint::Length(right_w)])
+            .split(content_area);
         (c[0], Some(c[1]))
     } else {
         (content_area, None)
     };
 
     // Game column: [output area | input block (3 rows: border + content + border)]
-    let [output_area, input_area] = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(3),
-    ])
-    .areas(game_col);
+    let [output_area, input_area] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(3)]).areas(game_col);
 
     // The bordered output block and input block each consume 2 rows for their borders.
     let output_inner_h = output_area.height.saturating_sub(2) as usize;
@@ -1201,8 +1333,7 @@ pub fn draw(frame: &mut Frame, state: &mut GameState, server_name: &str, char_na
     // Suppress the live prompt while in copy mode so the highlighted line is always scrollback.
     let has_prompt = state.prompt.is_some() && scroll == 0 && !state.copy_mode;
     // Reserve one row for the prompt when it's visible.
-    let rows_for_lines =
-        output_inner_h.saturating_sub(if has_prompt { 1 } else { 0 });
+    let rows_for_lines = output_inner_h.saturating_sub(if has_prompt { 1 } else { 0 });
 
     let line_end = buf_len.saturating_sub(scroll);
     let line_start = line_end.saturating_sub(rows_for_lines);
@@ -1223,9 +1354,7 @@ pub fn draw(frame: &mut Frame, state: &mut GameState, server_name: &str, char_na
 
     // Scroll indicator shown in the bottom border of the output block.
     let scroll_hint = if scroll > 0 {
-        format!(
-            " ↑{scroll}/{buf_len} lines — PgDn / Ctrl+End to return "
-        )
+        format!(" ↑{scroll}/{buf_len} lines — PgDn / Ctrl+End to return ")
     } else {
         String::new()
     };
@@ -1235,11 +1364,17 @@ pub fn draw(frame: &mut Frame, state: &mut GameState, server_name: &str, char_na
         let last = text_lines.len() - 1;
         if let Some(line) = text_lines.get_mut(last) {
             *line = Line::from(
-                line.spans.iter()
-                    .map(|sp| Span::styled(
-                        sp.content.clone(),
-                        sp.style.bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD),
-                    ))
+                line.spans
+                    .iter()
+                    .map(|sp| {
+                        Span::styled(
+                            sp.content.clone(),
+                            sp.style
+                                .bg(Color::Blue)
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD),
+                        )
+                    })
                     .collect::<Vec<_>>(),
             );
         }
@@ -1248,12 +1383,10 @@ pub fn draw(frame: &mut Frame, state: &mut GameState, server_name: &str, char_na
     let output_block = if state.copy_mode {
         Block::bordered()
             .title(format!(" {} ", server_name))
-            .title_bottom(
-                Line::from(Span::styled(
-                    " COPY MODE  \u{2191}\u{2193} scroll  y yank  Esc exit ",
-                    Style::default().fg(Color::Black).bg(Color::Yellow),
-                ))
-            )
+            .title_bottom(Line::from(Span::styled(
+                " COPY MODE  \u{2191}\u{2193} scroll  y yank  Esc exit ",
+                Style::default().fg(Color::Black).bg(Color::Yellow),
+            )))
             .border_style(Style::default().fg(Color::Yellow))
     } else {
         Block::bordered()
@@ -1276,7 +1409,12 @@ pub fn draw(frame: &mut Frame, state: &mut GameState, server_name: &str, char_na
         (" ".to_string(), String::new())
     };
     let input_line = Line::from(vec![
-        Span::styled("▶ ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "▶ ",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw(before_cursor.to_string()),
         Span::styled(
             cursor_ch,
@@ -1299,7 +1437,12 @@ pub fn draw(frame: &mut Frame, state: &mut GameState, server_name: &str, char_na
             .title_bottom(" Arrows pan  u/d z-level  c center  Esc/F6 close ")
             .border_style(Style::default().fg(Color::Cyan));
         let inner = block.inner(content_area);
-        let lines = build_map_lines(&state.sidebar.automap, inner.width, inner.height, state.map_pan);
+        let lines = build_map_lines(
+            &state.sidebar.automap,
+            inner.width,
+            inner.height,
+            state.map_pan,
+        );
         frame.render_widget(block, content_area);
         frame.render_widget(
             Paragraph::new(lines).style(Style::default().fg(Color::White)),
@@ -1317,7 +1460,11 @@ pub fn draw(frame: &mut Frame, state: &mut GameState, server_name: &str, char_na
     } else {
         Span::styled("○ ", Style::default().fg(Color::Red))
     };
-    let disc_hint = if !state.connected { "  disconnected" } else { "" };
+    let disc_hint = if !state.connected {
+        "  disconnected"
+    } else {
+        ""
+    };
     let latency_badge_color = |value: Option<u64>| match value {
         Some(ms) if ms <= 120 => Color::Rgb(60, 180, 60),
         Some(ms) if ms <= 250 => Color::Rgb(200, 160, 0),
@@ -1338,7 +1485,7 @@ pub fn draw(frame: &mut Frame, state: &mut GameState, server_name: &str, char_na
     let current_badge_color = latency_badge_color(state.latency);
     //let avg_badge_color     = latency_badge_color(state.latency_avg());
     let latency_spans: Vec<Span<'static>> = match (state.latency, state.latency_avg()) {
-        (Some(current), Some(avg)) => vec![
+        (Some(current), Some(_avg)) => vec![
             Span::raw("  "),
             badge(current_badge_color, format!(" {current}ms "), true),
             //Span::raw(" (ø"),
@@ -1360,8 +1507,5 @@ pub fn draw(frame: &mut Frame, state: &mut GameState, server_name: &str, char_na
         "{disc_hint}   \u{2191}\u{2193} hist   PgUp/Dn scroll   Ctrl+Y copy   F6 map   Ctrl+Q disc   F2/F3:sidebars  F4:panel"
     )));
     let status_line = Line::from(status_spans);
-    frame.render_widget(
-        Paragraph::new(status_line).style(base_style),
-        status_area,
-    );
+    frame.render_widget(Paragraph::new(status_line).style(base_style), status_area);
 }

@@ -1,3 +1,10 @@
+// Copyright (c) 2026 Raimo Geisel
+// SPDX-License-Identifier: GPL-3.0-only
+//
+// Durthang is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free
+// Software Foundation, version 3.  See <https://www.gnu.org/licenses/gpl-3.0.html>.
+
 //! Network layer — async TCP/Telnet connection to a MUD server.
 //!
 //! Architecture:
@@ -18,18 +25,21 @@
 //!   - The task gracefully shuts down when either the TCP stream closes or the
 //!     UI drops its end of the channel.
 
-use std::{sync::Arc, time::{Duration, Instant}};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use bytes::BytesMut;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
     sync::mpsc,
-    time::{interval, timeout, MissedTickBehavior},
+    time::{MissedTickBehavior, interval, timeout},
 };
 use tokio_rustls::{
-    rustls::{self, ClientConfig, RootCertStore},
     TlsConnector,
+    rustls::{self, ClientConfig, RootCertStore},
 };
 use tracing::{debug, error, info, warn};
 
@@ -60,12 +70,18 @@ const USER_LATENCY_MAX_AGE: Duration = Duration::from_secs(10);
 /// Maximum age for a probe latency sample.
 const PROBE_LATENCY_MAX_AGE: Duration = Duration::from_secs(3);
 
+/// Classifies the source of a pending latency measurement.
+///
+/// This distinction is used to apply different staleness thresholds:
+/// user-command samples remain valid for longer because the user may type
+/// slowly, whereas probe samples expire quickly.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum LatencySource {
     UserCommand,
     Probe,
 }
 
+/// An in-flight latency measurement waiting for the server's first response.
 #[derive(Copy, Clone, Debug)]
 struct PendingLatency {
     started: Instant,
@@ -73,6 +89,7 @@ struct PendingLatency {
 }
 
 impl PendingLatency {
+    /// Create a new sample stamped at `Instant::now()` with the given source.
     fn new(source: LatencySource) -> Self {
         Self {
             started: Instant::now(),
@@ -80,6 +97,7 @@ impl PendingLatency {
         }
     }
 
+    /// Maximum age a measurement of this type is considered valid.
     fn max_age(self) -> Duration {
         match self.source {
             LatencySource::UserCommand => USER_LATENCY_MAX_AGE,
@@ -87,6 +105,8 @@ impl PendingLatency {
         }
     }
 
+    /// Return `true` if the sample has exceeded its maximum age and should
+    /// be discarded.
     fn is_stale(self) -> bool {
         self.started.elapsed() > self.max_age()
     }
@@ -157,7 +177,10 @@ impl Connection {
             run_connection(host, port, tls, auto_login, initial_size, net_tx, ui_rx).await;
         });
 
-        Connection { rx: net_rx, tx: ui_tx }
+        Connection {
+            rx: net_rx,
+            tx: ui_tx,
+        }
     }
 
     /// Convenience: send a `Resize` event.
@@ -181,6 +204,9 @@ impl Connection {
 // ---------------------------------------------------------------------------
 
 /// Build a WILL / WONT / DO / DONT response for a single option byte.
+/// Translate a Telnet negotiation verb into its refusal counterpart.
+///
+/// `DO` → `WONT`, `WILL` → `DONT`, anything else → `WONT`.
 fn refuse(verb: u8) -> u8 {
     match verb {
         DO => WONT,
@@ -190,11 +216,17 @@ fn refuse(verb: u8) -> u8 {
 }
 
 /// Build a 3-byte IAC negotiation response.
+/// Construct a 3-byte Telnet IAC option negotiation sequence `[IAC, verb, opt]`.
 fn iac_response(verb: u8, opt: u8) -> [u8; 3] {
     [IAC, verb, opt]
 }
 
 /// Build a NAWS sub-negotiation packet for the given terminal size.
+/// Construct a NAWS (Negotiate About Window Size) sub-negotiation packet.
+///
+/// The packet carries the terminal dimensions as two big-endian 16-bit
+/// integers.  Any `0xFF` byte in the data is doubled (escaped) as required
+/// by RFC 855.
 fn naws_packet(cols: u16, rows: u16) -> Vec<u8> {
     let mut buf = Vec::with_capacity(9);
     buf.extend_from_slice(&[IAC, SB, OPT_NAWS]);
@@ -213,8 +245,11 @@ fn naws_packet(cols: u16, rows: u16) -> Vec<u8> {
 // Telnet stream parser
 // ---------------------------------------------------------------------------
 
+/// Accumulated output of a single call to [`parse_telnet`].
 struct TelnetParseResult {
+    /// Printable text with all Telnet control sequences removed.
     text: String,
+    /// Zero or more extracted GMCP sub-negotiation payloads.
     gmcp: Vec<String>,
 }
 
@@ -222,6 +257,17 @@ struct TelnetParseResult {
 /// - Strips IAC sequences and negotiates options by appending responses to
 ///   `responses`.
 /// - Returns printable text and extracted GMCP payloads.
+/// Parse a raw byte buffer received from the server and strip Telnet protocol
+/// bytes.
+///
+/// IAC sequences are processed in-place:
+/// * Three-byte option negotiations (`WILL / WONT / DO / DONT`) are responded
+///   to immediately by appending to `responses`.
+/// * Sub-negotiations (`SB … SE`) for GMCP are extracted into the returned
+///   [`TelnetParseResult::gmcp`] list; all others are silently discarded.
+/// * The literal escape `IAC IAC` is decoded to a single `0xFF` byte.
+/// * All remaining bytes are treated as UTF-8 text and returned in
+///   [`TelnetParseResult::text`].
 fn parse_telnet(buf: &[u8], responses: &mut Vec<u8>) -> TelnetParseResult {
     let mut out = Vec::with_capacity(buf.len());
     let mut gmcp = Vec::new();
@@ -320,6 +366,15 @@ fn parse_telnet(buf: &[u8], responses: &mut Vec<u8>) -> TelnetParseResult {
 // ---------------------------------------------------------------------------
 
 /// Perform a TLS handshake over an existing TCP stream.
+/// Wrap an existing TCP stream with a TLS layer using system root certificates.
+///
+/// `host` must be a valid DNS name that matches the server's certificate
+/// subject, as it is passed to rustls as the SNI host name.
+///
+/// # Errors
+///
+/// Returns an error if the certificate store cannot be loaded, if SNI name
+/// parsing fails, or if the TLS handshake is rejected by the server.
 async fn connect_tls(
     stream: TcpStream,
     host: &str,
@@ -363,7 +418,9 @@ async fn run_connection(
         }
         Err(_) => {
             error!("TCP connect timed out");
-            let _ = tx.send(NetEvent::Disconnected("Connection timed out".into())).await;
+            let _ = tx
+                .send(NetEvent::Disconnected("Connection timed out".into()))
+                .await;
             return;
         }
     };
@@ -387,7 +444,9 @@ async fn run_connection(
             }
             Err(e) => {
                 error!("TLS handshake failed: {e}");
-                let _ = tx.send(NetEvent::Disconnected(format!("TLS error: {e}"))).await;
+                let _ = tx
+                    .send(NetEvent::Disconnected(format!("TLS error: {e}")))
+                    .await;
             }
         }
     } else {
@@ -417,8 +476,7 @@ fn is_complete_escape(seq: &[u8]) -> bool {
         }
         b']' | b'P' | b'^' | b'_' | b'X' => {
             // OSC / DCS / PM / APC / SOS: terminated by BEL or ST (ESC \)
-            seq[2..].iter().any(|&b| b == 0x07)
-                || seq[2..].windows(2).any(|w| w == [0x1b, b'\\'])
+            seq[2..].iter().any(|&b| b == 0x07) || seq[2..].windows(2).any(|w| w == [0x1b, b'\\'])
         }
         b'(' | b')' | b'*' | b'+' => {
             // Charset designation: ESC + designator + one charset byte = 3 bytes

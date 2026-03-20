@@ -1,3 +1,10 @@
+// Copyright (c) 2026 Raimo Geisel
+// SPDX-License-Identifier: GPL-3.0-only
+//
+// Durthang is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free
+// Software Foundation, version 3.  See <https://www.gnu.org/licenses/gpl-3.0.html>.
+
 //! Sidebar panel system — automap minimap and user notes.
 //!
 //! # F-key layout
@@ -11,11 +18,11 @@
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
-    Frame,
 };
 
 use crate::config::{PanelConfig, PanelKind, SidebarLayout, SidebarSide};
@@ -52,14 +59,12 @@ pub struct SidebarState {
     pub automap: WorldMap,
 
     // --- Interaction state ---
-
     /// Cursor row within the focused panel list.
     pub panel_cursor: usize,
     /// Cursor row in the options overlay.
     pub options_cursor: usize,
 
     // --- Notes editing state ---
-
     /// Whether the notes panel is currently in text-editing mode.
     pub notes_editing: bool,
     /// `true` while entering a brand-new note (so Esc removes it instead of reverting).
@@ -77,6 +82,9 @@ impl Default for SidebarState {
 }
 
 impl SidebarState {
+    /// Create a new [`SidebarState`] from the given layout, running the
+    /// [`migrate_layout`] pass first to remove legacy panel kinds and ensure
+    /// both `Automap` and `Notes` panels are present on the right side.
     pub fn new(mut layout: SidebarLayout) -> Self {
         migrate_layout(&mut layout);
         Self {
@@ -95,7 +103,10 @@ impl SidebarState {
 
     /// Returns `true` if any panel is assigned to the given sidebar side.
     pub fn has_side_panels(&self, side: &SidebarSide) -> bool {
-        self.layout.panels.iter().any(|p| p.side.as_ref() == Some(side))
+        self.layout
+            .panels
+            .iter()
+            .any(|p| p.side.as_ref() == Some(side))
     }
 
     /// Toggles right sidebar visibility (no-op when no panels are assigned).
@@ -105,9 +116,14 @@ impl SidebarState {
             self.layout.right_visible = !self.layout.right_visible;
             if !self.layout.right_visible {
                 if let Some(fp) = &self.focused_panel {
-                    let on_right = self.layout.panels.iter()
+                    let on_right = self
+                        .layout
+                        .panels
+                        .iter()
                         .any(|p| p.kind == *fp && p.side == Some(SidebarSide::Right));
-                    if on_right { self.focused_panel = None; }
+                    if on_right {
+                        self.focused_panel = None;
+                    }
                 }
             }
             true
@@ -119,7 +135,10 @@ impl SidebarState {
     /// Cycles keyboard focus to the next visible right-sidebar panel (wraps; `None` → first).
     /// Resets `panel_cursor` to 0 whenever focus changes.
     pub fn focus_next_panel(&mut self) {
-        let visible: Vec<PanelKind> = self.layout.panels.iter()
+        let visible: Vec<PanelKind> = self
+            .layout
+            .panels
+            .iter()
             .filter(|p| p.side == Some(SidebarSide::Right) && self.layout.right_visible)
             .map(|p| p.kind.clone())
             .collect();
@@ -134,7 +153,7 @@ impl SidebarState {
             Some(cur) => {
                 let pos = visible.iter().position(|k| k == cur);
                 match pos {
-                    None    => visible.into_iter().next(),
+                    None => visible.into_iter().next(),
                     Some(i) => {
                         let next_i = (i + 1) % visible.len();
                         visible.into_iter().nth(next_i)
@@ -143,7 +162,7 @@ impl SidebarState {
             }
         };
         self.focused_panel = next;
-        self.panel_cursor  = 0;
+        self.panel_cursor = 0;
     }
 
     // ------------------------------------------------------------------
@@ -170,28 +189,43 @@ impl SidebarState {
         self.automap.current_room_id.clone()
     }
 
+    /// Return the number of selectable items in the currently focused panel.
     fn active_panel_len(&self) -> usize {
         match &self.focused_panel {
-            Some(PanelKind::Notes)   => self.layout.notes.len(),
+            Some(PanelKind::Notes) => self.layout.notes.len(),
             Some(PanelKind::Automap) => 0,
-            _                        => 0,
+            _ => 0,
         }
     }
 }
 
-/// Remove legacy panel kinds and ensure Automap + Notes are present on the right side.
+/// Remove legacy panel kinds and ensure `Automap` and `Notes` are present and
+/// assigned to the right sidebar column.
+///
+/// Called automatically by [`SidebarState::new`].  The migration is
+/// idempotent and preserves any user-defined `height_pct` values for panels
+/// that already exist correctly.
 fn migrate_layout(layout: &mut SidebarLayout) {
     // Drop panels whose kind no longer exists in active code.
-    layout.panels.retain(|p| matches!(p.kind, PanelKind::Automap | PanelKind::Notes));
+    layout
+        .panels
+        .retain(|p| matches!(p.kind, PanelKind::Automap | PanelKind::Notes));
 
     // Guarantee Automap is present and assigned to the right side.
-    match layout.panels.iter_mut().find(|p| p.kind == PanelKind::Automap) {
+    match layout
+        .panels
+        .iter_mut()
+        .find(|p| p.kind == PanelKind::Automap)
+    {
         None => {
-            layout.panels.insert(0, PanelConfig {
-                kind: PanelKind::Automap,
-                side: Some(SidebarSide::Right),
-                height_pct: 35,
-            });
+            layout.panels.insert(
+                0,
+                PanelConfig {
+                    kind: PanelKind::Automap,
+                    side: Some(SidebarSide::Right),
+                    height_pct: 35,
+                },
+            );
         }
         Some(p) if p.side.is_none() => {
             p.side = Some(SidebarSide::Right);
@@ -200,7 +234,11 @@ fn migrate_layout(layout: &mut SidebarLayout) {
     }
 
     // Guarantee Notes panel is present and assigned to the right side.
-    match layout.panels.iter_mut().find(|p| p.kind == PanelKind::Notes) {
+    match layout
+        .panels
+        .iter_mut()
+        .find(|p| p.kind == PanelKind::Notes)
+    {
         None => {
             layout.panels.push(PanelConfig {
                 kind: PanelKind::Notes,
@@ -215,10 +253,18 @@ fn migrate_layout(layout: &mut SidebarLayout) {
     }
 
     // Make sure Automap appears before Notes (minimap on top).
-    let ai = layout.panels.iter().position(|p| p.kind == PanelKind::Automap);
-    let ni = layout.panels.iter().position(|p| p.kind == PanelKind::Notes);
+    let ai = layout
+        .panels
+        .iter()
+        .position(|p| p.kind == PanelKind::Automap);
+    let ni = layout
+        .panels
+        .iter()
+        .position(|p| p.kind == PanelKind::Notes);
     if let (Some(ai), Some(ni)) = (ai, ni) {
-        if ai > ni { layout.panels.swap(ai, ni); }
+        if ai > ni {
+            layout.panels.swap(ai, ni);
+        }
     }
 }
 
@@ -251,7 +297,7 @@ pub fn handle_sidebar_key(state: &mut SidebarState, key: KeyEvent) -> SidebarKey
 
         // Open options overlay.
         KeyCode::Char('o') => {
-            state.options_open   = true;
+            state.options_open = true;
             state.options_cursor = 0;
             SidebarKeyResult::Consumed
         }
@@ -276,10 +322,10 @@ pub fn handle_sidebar_key(state: &mut SidebarState, key: KeyEvent) -> SidebarKey
         {
             let idx = state.layout.notes.len();
             state.layout.notes.push(String::new());
-            state.panel_cursor      = idx;
-            state.notes_editing     = true;
-            state.notes_is_new      = true;
-            state.notes_edit_buf    = String::new();
+            state.panel_cursor = idx;
+            state.notes_editing = true;
+            state.notes_is_new = true;
+            state.notes_edit_buf = String::new();
             state.notes_edit_cursor = 0;
             SidebarKeyResult::Consumed
         }
@@ -289,9 +335,9 @@ pub fn handle_sidebar_key(state: &mut SidebarState, key: KeyEvent) -> SidebarKey
             if matches!(state.focused_panel, Some(PanelKind::Notes)) =>
         {
             if let Some(existing) = state.layout.notes.get(state.panel_cursor) {
-                state.notes_editing     = true;
-                state.notes_is_new      = false;
-                state.notes_edit_buf    = existing.clone();
+                state.notes_editing = true;
+                state.notes_is_new = false;
+                state.notes_edit_buf = existing.clone();
                 state.notes_edit_cursor = existing.len();
             }
             SidebarKeyResult::Consumed
@@ -312,9 +358,7 @@ pub fn handle_sidebar_key(state: &mut SidebarState, key: KeyEvent) -> SidebarKey
         }
 
         // Notes: Move the selected note up ('K').
-        KeyCode::Char('K')
-            if matches!(state.focused_panel, Some(PanelKind::Notes)) =>
-        {
+        KeyCode::Char('K') if matches!(state.focused_panel, Some(PanelKind::Notes)) => {
             let i = state.panel_cursor;
             if i > 0 && i < state.layout.notes.len() {
                 state.layout.notes.swap(i - 1, i);
@@ -325,9 +369,7 @@ pub fn handle_sidebar_key(state: &mut SidebarState, key: KeyEvent) -> SidebarKey
         }
 
         // Notes: Move the selected note down ('J').
-        KeyCode::Char('J')
-            if matches!(state.focused_panel, Some(PanelKind::Notes)) =>
-        {
+        KeyCode::Char('J') if matches!(state.focused_panel, Some(PanelKind::Notes)) => {
             let i = state.panel_cursor;
             if i + 1 < state.layout.notes.len() {
                 state.layout.notes.swap(i, i + 1);
@@ -350,7 +392,7 @@ fn handle_notes_edit_key(state: &mut SidebarState, key: KeyEvent) -> SidebarKeyR
             if idx < state.layout.notes.len() {
                 state.layout.notes[idx] = std::mem::take(&mut state.notes_edit_buf);
             }
-            state.notes_editing     = false;
+            state.notes_editing = false;
             state.notes_edit_cursor = 0;
             SidebarKeyResult::SaveLayout
         }
@@ -358,12 +400,14 @@ fn handle_notes_edit_key(state: &mut SidebarState, key: KeyEvent) -> SidebarKeyR
         KeyCode::Esc => {
             if state.notes_is_new && state.panel_cursor < state.layout.notes.len() {
                 state.layout.notes.remove(state.panel_cursor);
-                if state.panel_cursor > 0 { state.panel_cursor -= 1; }
-                state.notes_editing     = false;
+                if state.panel_cursor > 0 {
+                    state.panel_cursor -= 1;
+                }
+                state.notes_editing = false;
                 state.notes_edit_cursor = 0;
                 return SidebarKeyResult::SaveLayout;
             }
-            state.notes_editing     = false;
+            state.notes_editing = false;
             state.notes_edit_cursor = 0;
             SidebarKeyResult::Consumed
         }
@@ -371,7 +415,9 @@ fn handle_notes_edit_key(state: &mut SidebarState, key: KeyEvent) -> SidebarKeyR
         KeyCode::Backspace => {
             if state.notes_edit_cursor > 0 {
                 let mut pos = state.notes_edit_cursor - 1;
-                while !state.notes_edit_buf.is_char_boundary(pos) { pos -= 1; }
+                while !state.notes_edit_buf.is_char_boundary(pos) {
+                    pos -= 1;
+                }
                 state.notes_edit_buf.remove(pos);
                 state.notes_edit_cursor = pos;
             }
@@ -389,7 +435,9 @@ fn handle_notes_edit_key(state: &mut SidebarState, key: KeyEvent) -> SidebarKeyR
         KeyCode::Left => {
             if state.notes_edit_cursor > 0 {
                 let mut pos = state.notes_edit_cursor - 1;
-                while !state.notes_edit_buf.is_char_boundary(pos) { pos -= 1; }
+                while !state.notes_edit_buf.is_char_boundary(pos) {
+                    pos -= 1;
+                }
                 state.notes_edit_cursor = pos;
             }
             SidebarKeyResult::Consumed
@@ -439,11 +487,15 @@ fn handle_options_key(state: &mut SidebarState, key: KeyEvent) -> SidebarKeyResu
             SidebarKeyResult::SaveLayout
         }
         KeyCode::Up => {
-            if state.options_cursor > 0 { state.options_cursor -= 1; }
+            if state.options_cursor > 0 {
+                state.options_cursor -= 1;
+            }
             SidebarKeyResult::Consumed
         }
         KeyCode::Down => {
-            if state.options_cursor + 1 < n_rows { state.options_cursor += 1; }
+            if state.options_cursor + 1 < n_rows {
+                state.options_cursor += 1;
+            }
             SidebarKeyResult::Consumed
         }
         KeyCode::Enter | KeyCode::Char(' ') => {
@@ -460,9 +512,9 @@ fn handle_options_key(state: &mut SidebarState, key: KeyEvent) -> SidebarKeyResu
             if i < n_panels {
                 let p = &mut state.layout.panels[i];
                 p.side = match &p.side {
-                    None                    => Some(SidebarSide::Right),
+                    None => Some(SidebarSide::Right),
                     Some(SidebarSide::Right) => None,
-                    Some(SidebarSide::Left)  => None,
+                    Some(SidebarSide::Left) => None,
                 };
                 SidebarKeyResult::SaveLayout
             } else if i == n_panels && state.layout.right_width < 60 {
@@ -479,9 +531,9 @@ fn handle_options_key(state: &mut SidebarState, key: KeyEvent) -> SidebarKeyResu
             if i < n_panels {
                 let p = &mut state.layout.panels[i];
                 p.side = match &p.side {
-                    None                    => Some(SidebarSide::Right),
+                    None => Some(SidebarSide::Right),
                     Some(SidebarSide::Right) => None,
-                    Some(SidebarSide::Left)  => None,
+                    Some(SidebarSide::Left) => None,
                 };
                 SidebarKeyResult::SaveLayout
             } else if i == n_panels && state.layout.right_width > 12 {
@@ -542,7 +594,10 @@ pub fn draw(
 /// Render all panels assigned to `side` stacked vertically inside `area`.
 /// Heights are allocated proportionally to each panel's `height_pct`.
 fn draw_sidebar_col(frame: &mut Frame, state: &SidebarState, area: Rect, side: &SidebarSide) {
-    let panels: Vec<&PanelConfig> = state.layout.panels.iter()
+    let panels: Vec<&PanelConfig> = state
+        .layout
+        .panels
+        .iter()
         .filter(|p| p.side.as_ref() == Some(side))
         .collect();
 
@@ -560,7 +615,8 @@ fn draw_sidebar_col(frame: &mut Frame, state: &SidebarState, area: Rect, side: &
         0
     };
     let others_h: u16 = avail_h.saturating_sub(automap_h);
-    let others_pct: u32 = panels.iter()
+    let others_pct: u32 = panels
+        .iter()
         .filter(|p| p.kind != PanelKind::Automap)
         .map(|p| p.height_pct as u32)
         .sum::<u32>()
@@ -569,7 +625,7 @@ fn draw_sidebar_col(frame: &mut Frame, state: &SidebarState, area: Rect, side: &
     let mut y = area.y;
 
     for (i, pc) in panels.iter().enumerate() {
-        let is_last  = i == panels.len() - 1;
+        let is_last = i == panels.len() - 1;
         let panel_h: u16 = if pc.kind == PanelKind::Automap {
             automap_h
         } else if is_last {
@@ -577,10 +633,19 @@ fn draw_sidebar_col(frame: &mut Frame, state: &SidebarState, area: Rect, side: &
         } else {
             ((others_h as u32 * pc.height_pct as u32) / others_pct) as u16
         };
-        if panel_h == 0 { continue; }
-        if y + panel_h > area.y + avail_h { break; }
+        if panel_h == 0 {
+            continue;
+        }
+        if y + panel_h > area.y + avail_h {
+            break;
+        }
 
-        let panel_area = Rect { x: area.x, y, width: area.width, height: panel_h };
+        let panel_area = Rect {
+            x: area.x,
+            y,
+            width: area.width,
+            height: panel_h,
+        };
         y += panel_h;
 
         let focused = state.focused_panel.as_ref() == Some(&pc.kind);
@@ -588,11 +653,17 @@ fn draw_sidebar_col(frame: &mut Frame, state: &SidebarState, area: Rect, side: &
     }
 }
 
-fn draw_panel(frame: &mut Frame, state: &SidebarState, kind: &PanelKind, area: Rect, focused: bool) {
+fn draw_panel(
+    frame: &mut Frame,
+    state: &SidebarState,
+    kind: &PanelKind,
+    area: Rect,
+    focused: bool,
+) {
     match kind {
         PanelKind::Automap => draw_automap_panel(frame, &state.automap, area, focused),
-        PanelKind::Notes   => draw_notes_panel(frame, state, area, focused),
-        _                  => {}
+        PanelKind::Notes => draw_notes_panel(frame, state, area, focused),
+        _ => {}
     }
 }
 
@@ -656,7 +727,12 @@ fn draw_automap_panel(frame: &mut Frame, map: &WorldMap, area: Rect, focused: bo
         let legend = format!("@ {}  z:{}", cur.name, cur.z);
         let idx = lines.len() - 1;
         lines[idx] = Line::from(vec![
-            Span::styled("@", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "@",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(format!(" {}", legend.trim_start_matches('@').trim_start())),
         ]);
     }
@@ -716,7 +792,7 @@ fn draw_notes_panel(frame: &mut Frame, state: &SidebarState, area: Rect, focused
             if is_cursor && state.notes_editing {
                 // Show the edit buffer with a block cursor.
                 let before = &state.notes_edit_buf[..state.notes_edit_cursor];
-                let rest   = &state.notes_edit_buf[state.notes_edit_cursor..];
+                let rest = &state.notes_edit_buf[state.notes_edit_cursor..];
                 let mut chars = rest.chars();
                 let cursor_char = chars.next().unwrap_or(' ');
                 let after: &str = chars.as_str();
@@ -742,7 +818,9 @@ fn draw_notes_panel(frame: &mut Frame, state: &SidebarState, area: Rect, focused
     let mut list_state = ListState::default();
     if focused && !state.layout.notes.is_empty() {
         list_state.select(Some(
-            state.panel_cursor.min(state.layout.notes.len().saturating_sub(1)),
+            state
+                .panel_cursor
+                .min(state.layout.notes.len().saturating_sub(1)),
         ));
     }
     frame.render_stateful_widget(List::new(items), inner, &mut list_state);
@@ -755,14 +833,21 @@ fn draw_options_modal(frame: &mut Frame, state: &SidebarState, parent: Rect) {
     let modal_w: u16 = parent.width.min(46).max(28);
     let x = parent.x + parent.width.saturating_sub(modal_w) / 2;
     let y = parent.y + parent.height.saturating_sub(modal_h) / 2;
-    let modal_area = Rect { x, y, width: modal_w, height: modal_h };
+    let modal_area = Rect {
+        x,
+        y,
+        width: modal_w,
+        height: modal_h,
+    };
 
     frame.render_widget(Clear, modal_area);
 
     let block = Block::default()
         .title(Span::styled(
             " Sidebar Options ",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Yellow));
@@ -774,14 +859,14 @@ fn draw_options_modal(frame: &mut Frame, state: &SidebarState, parent: Rect) {
 
     // --- Panel rows ---
     for (i, pc) in state.layout.panels.iter().enumerate() {
-        let selected  = state.options_cursor == i;
+        let selected = state.options_cursor == i;
         let row_style = if selected {
             Style::default().bg(Color::White).fg(Color::Black)
         } else {
             Style::default()
         };
         let side_str = match &pc.side {
-            None                    => " -- ",
+            None => " -- ",
             Some(SidebarSide::Left) => "Left",
             Some(SidebarSide::Right) => " Rt ",
         };
@@ -790,9 +875,16 @@ fn draw_options_modal(frame: &mut Frame, state: &SidebarState, parent: Rect) {
         } else {
             "    ".to_string()
         };
-        let hint = if selected { "  \u{2190}\u{2192}:vis  +/-:h%" } else { "" };
+        let hint = if selected {
+            "  \u{2190}\u{2192}:vis  +/-:h%"
+        } else {
+            ""
+        };
         lines.push(Line::from(vec![
-            Span::styled(format!("{:<8} ", pc.kind.short_label()), row_style.add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("{:<8} ", pc.kind.short_label()),
+                row_style.add_modifier(Modifier::BOLD),
+            ),
             Span::styled(format!("[{side_str}]"), row_style),
             Span::styled(format!(" {h_str}"), row_style),
             Span::styled(hint, Style::default().fg(Color::DarkGray)),
@@ -806,22 +898,36 @@ fn draw_options_modal(frame: &mut Frame, state: &SidebarState, parent: Rect) {
     )));
 
     // Width row
-    let rw_sel   = state.options_cursor == n_panels;
-    let rw_style = if rw_sel { Style::default().bg(Color::White).fg(Color::Black) } else { Style::default() };
+    let rw_sel = state.options_cursor == n_panels;
+    let rw_style = if rw_sel {
+        Style::default().bg(Color::White).fg(Color::Black)
+    } else {
+        Style::default()
+    };
     lines.push(Line::from(vec![
         Span::styled("Width   ", Style::default().fg(Color::Cyan)),
         Span::styled(format!("{:>3}", state.layout.right_width), rw_style),
-        Span::styled(if rw_sel { "  \u{2190}\u{2192} adjust" } else { "" }, Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            if rw_sel {
+                "  \u{2190}\u{2192} adjust"
+            } else {
+                ""
+            },
+            Style::default().fg(Color::DarkGray),
+        ),
     ]));
 
     // Close row
-    let c_sel   = state.options_cursor == n_panels + 1;
+    let c_sel = state.options_cursor == n_panels + 1;
     let c_style = if c_sel {
         Style::default().bg(Color::Yellow).fg(Color::Black)
     } else {
         Style::default().fg(Color::DarkGray)
     };
-    lines.push(Line::from(Span::styled(" [Close]  Esc to save & close", c_style)));
+    lines.push(Line::from(Span::styled(
+        " [Close]  Esc to save & close",
+        c_style,
+    )));
 
     frame.render_widget(Paragraph::new(lines), inner);
 }
