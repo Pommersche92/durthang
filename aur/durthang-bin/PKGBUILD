@@ -9,7 +9,7 @@ license=('GPL-3.0-only')
 provides=('durthang')
 conflicts=('durthang')
 source=("https://github.com/Pommersche92/durthang/releases/download/v$pkgver/durthang-$pkgver-x86_64.tar.gz")
-sha256sums=('b472740a03bc6a52d89e05b102d1a9529e01ae4c2989fdeb3528dd3288e1dc53')
+sha256sums=('6bf328d07c7a5d651d6fa00e00734d25efc68e599571b7c71241186994dfb04c')
 
 package() {
     cd "durthang-$pkgver"
