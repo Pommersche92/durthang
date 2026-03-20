@@ -184,22 +184,34 @@ fn migrate_layout(layout: &mut SidebarLayout) {
     // Drop panels whose kind no longer exists in active code.
     layout.panels.retain(|p| matches!(p.kind, PanelKind::Automap | PanelKind::Notes));
 
-    // Guarantee Automap is present.
-    if !layout.panels.iter().any(|p| p.kind == PanelKind::Automap) {
-        layout.panels.insert(0, PanelConfig {
-            kind: PanelKind::Automap,
-            side: Some(SidebarSide::Right),
-            height_pct: 35,
-        });
+    // Guarantee Automap is present and assigned to the right side.
+    match layout.panels.iter_mut().find(|p| p.kind == PanelKind::Automap) {
+        None => {
+            layout.panels.insert(0, PanelConfig {
+                kind: PanelKind::Automap,
+                side: Some(SidebarSide::Right),
+                height_pct: 35,
+            });
+        }
+        Some(p) if p.side.is_none() => {
+            p.side = Some(SidebarSide::Right);
+        }
+        _ => {}
     }
 
-    // Guarantee Notes panel is present.
-    if !layout.panels.iter().any(|p| p.kind == PanelKind::Notes) {
-        layout.panels.push(PanelConfig {
-            kind: PanelKind::Notes,
-            side: Some(SidebarSide::Right),
-            height_pct: 65,
-        });
+    // Guarantee Notes panel is present and assigned to the right side.
+    match layout.panels.iter_mut().find(|p| p.kind == PanelKind::Notes) {
+        None => {
+            layout.panels.push(PanelConfig {
+                kind: PanelKind::Notes,
+                side: Some(SidebarSide::Right),
+                height_pct: 65,
+            });
+        }
+        Some(p) if p.side.is_none() => {
+            p.side = Some(SidebarSide::Right);
+        }
+        _ => {}
     }
 
     // Make sure Automap appears before Notes (minimap on top).
@@ -538,16 +550,32 @@ fn draw_sidebar_col(frame: &mut Frame, state: &SidebarState, area: Rect, side: &
         return;
     }
 
-    let total_pct: u32 = panels.iter().map(|p| p.height_pct as u32).sum::<u32>().max(1);
-    let avail_h   = area.height;
-    let mut y     = area.y;
+    let avail_h = area.height;
+
+    // Automap always gets a square allocation (height = column width).
+    // All other panels share the remaining height proportionally by height_pct.
+    let automap_h: u16 = if panels.iter().any(|p| p.kind == PanelKind::Automap) {
+        (area.width / 2).min(avail_h)
+    } else {
+        0
+    };
+    let others_h: u16 = avail_h.saturating_sub(automap_h);
+    let others_pct: u32 = panels.iter()
+        .filter(|p| p.kind != PanelKind::Automap)
+        .map(|p| p.height_pct as u32)
+        .sum::<u32>()
+        .max(1);
+
+    let mut y = area.y;
 
     for (i, pc) in panels.iter().enumerate() {
         let is_last  = i == panels.len() - 1;
-        let panel_h: u16 = if is_last {
+        let panel_h: u16 = if pc.kind == PanelKind::Automap {
+            automap_h
+        } else if is_last {
             (area.y + avail_h).saturating_sub(y)
         } else {
-            ((avail_h as u32 * pc.height_pct as u32) / total_pct) as u16
+            ((others_h as u32 * pc.height_pct as u32) / others_pct) as u16
         };
         if panel_h == 0 { continue; }
         if y + panel_h > area.y + avail_h { break; }
