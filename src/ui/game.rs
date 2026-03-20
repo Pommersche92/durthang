@@ -69,6 +69,8 @@ struct CompiledTrigger {
 
 /// Maximum number of lines kept in the scrollback buffer.
 const SCROLLBACK_MAX: usize = 5_000;
+/// Number of latency samples used for the rolling average.
+const LATENCY_AVG_SAMPLES: usize = 8;
 
 // ---------------------------------------------------------------------------
 // GameState
@@ -91,6 +93,8 @@ pub struct GameState {
     history_snapshot: String,
     /// Latest latency reading in ms.
     pub latency: Option<u64>,
+    /// Recent latency samples for the rolling average shown in the status bar.
+    latency_samples: VecDeque<u64>,
     /// True while the connection is alive.
     pub connected: bool,
     /// Partial prompt line received without a trailing newline.
@@ -121,6 +125,7 @@ impl GameState {
             history_idx: None,
             history_snapshot: String::new(),
             latency: None,
+            latency_samples: VecDeque::new(),
             connected: false,
             prompt: None,
             last_output_height: 20,
@@ -280,12 +285,33 @@ impl GameState {
 
     pub fn on_connect(&mut self) {
         self.connected = true;
+        self.latency = None;
+        self.latency_samples.clear();
         self.scroll_to_bottom();
         self.prompt = None;
     }
 
     pub fn on_disconnect(&mut self) {
         self.connected = false;
+        self.latency = None;
+        self.latency_samples.clear();
+    }
+
+    pub fn record_latency(&mut self, ms: u64) {
+        self.latency = Some(ms);
+        self.latency_samples.push_back(ms);
+        while self.latency_samples.len() > LATENCY_AVG_SAMPLES {
+            self.latency_samples.pop_front();
+        }
+    }
+
+    fn latency_avg(&self) -> Option<u64> {
+        if self.latency_samples.is_empty() {
+            return None;
+        }
+        let sum: u64 = self.latency_samples.iter().copied().sum();
+        let count = u64::try_from(self.latency_samples.len()).unwrap_or(1);
+        Some(sum / count)
     }
 
     // ------------------------------------------------------------------
@@ -1123,14 +1149,14 @@ pub fn draw(frame: &mut Frame, state: &mut GameState, server_name: &str, char_na
         (false, false) => (None, content_area, None),
     };
 
-    // Game column: [output area | input line (1 row)]
+    // Game column: [output area | input block (3 rows: border + content + border)]
     let [output_area, input_area] = Layout::vertical([
         Constraint::Fill(1),
-        Constraint::Length(1),
+        Constraint::Length(3),
     ])
     .areas(game_col);
 
-    // The bordered output block consumes 2 rows for its borders.
+    // The bordered output block and input block each consume 2 rows for their borders.
     let output_inner_h = output_area.height.saturating_sub(2) as usize;
     state.last_output_height = output_inner_h.max(1);
 
@@ -1207,7 +1233,7 @@ pub fn draw(frame: &mut Frame, state: &mut GameState, server_name: &str, char_na
         .wrap(Wrap { trim: false });
     frame.render_widget(output_para, output_area);
 
-    // --- Input line ---
+    // --- Input line (bordered) ---
     let before_cursor = &state.input[..state.input_cursor];
     let (cursor_ch, after_cursor) = if state.input_cursor < state.input.len() {
         let c = state.input[state.input_cursor..].chars().next().unwrap();
@@ -1225,30 +1251,69 @@ pub fn draw(frame: &mut Frame, state: &mut GameState, server_name: &str, char_na
         ),
         Span::raw(after_cursor),
     ]);
-    frame.render_widget(Paragraph::new(input_line), input_area);
+    frame.render_widget(
+        Paragraph::new(input_line).block(Block::bordered()),
+        input_area,
+    );
 
     // --- Sidebars ---
     sidebar::draw(frame, &state.sidebar, area, left_area_opt, right_area_opt);
 
     // --- Status bar ---
+    // Use REVERSED on the paragraph base so the bar adapts to dark/light themes.
+    // Latency values are rendered as colored badges (explicit bg + black fg +
+    // REVERSED removed) so their color is always visible in any theme.
+    let base_style = Style::default().add_modifier(Modifier::REVERSED);
     let conn_icon = if state.connected {
-        Span::styled("● ", Style::default().fg(Color::Green).add_modifier(Modifier::REVERSED))
+        Span::styled("● ", Style::default().fg(Color::Green))
     } else {
-        Span::styled("○ ", Style::default().fg(Color::Red).add_modifier(Modifier::REVERSED))
-    };
-    let lat_str = match state.latency {
-        Some(ms) => format!("  lat {ms}ms"),
-        None => String::new(),
+        Span::styled("○ ", Style::default().fg(Color::Red))
     };
     let disc_hint = if !state.connected { "  disconnected" } else { "" };
-    let info = format!(
-        "{server_name}  /  {char_name}{lat_str}{disc_hint}   \
-         \u{2191}\u{2193} hist   PgUp/Dn scroll   Ctrl+Y copy   Ctrl+Q disc   F2/F3:sidebars  F4:panel"
-    );
-    let status_line = Line::from(vec![conn_icon, Span::raw(info)]);
+    let latency_badge_color = |value: Option<u64>| match value {
+        Some(ms) if ms <= 120 => Color::Rgb(60, 180, 60),
+        Some(ms) if ms <= 250 => Color::Rgb(200, 160, 0),
+        Some(_) => Color::Rgb(200, 50, 50),
+        None => Color::Reset,
+    };
+    // Badge style: colored bg, black text, no REVERSED so colors are exact.
+    let badge = |color: Color, text: String, bold: bool| -> Span<'static> {
+        let mut style = Style::default()
+            .fg(Color::Black)
+            .bg(color)
+            .remove_modifier(Modifier::REVERSED);
+        if bold {
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        Span::styled(text, style)
+    };
+    let current_badge_color = latency_badge_color(state.latency);
+    //let avg_badge_color     = latency_badge_color(state.latency_avg());
+    let latency_spans: Vec<Span<'static>> = match (state.latency, state.latency_avg()) {
+        (Some(current), Some(avg)) => vec![
+            Span::raw("  "),
+            badge(current_badge_color, format!(" {current}ms "), true),
+            //Span::raw(" (ø"),
+            //badge(avg_badge_color, format!(" {avg}ms "), false),
+            //Span::raw(")"),
+        ],
+        (Some(current), None) => vec![
+            Span::raw("  "),
+            badge(current_badge_color, format!(" {current}ms "), true),
+        ],
+        _ => vec![Span::raw("  --")],
+    };
+    let mut status_spans: Vec<Span<'static>> = vec![
+        conn_icon,
+        Span::raw(format!(" {server_name}  /  {char_name}")),
+    ];
+    status_spans.extend(latency_spans);
+    status_spans.push(Span::raw(format!(
+        "{disc_hint}   \u{2191}\u{2193} hist   PgUp/Dn scroll   Ctrl+Y copy   Ctrl+Q disc   F2/F3:sidebars  F4:panel"
+    )));
+    let status_line = Line::from(status_spans);
     frame.render_widget(
-        Paragraph::new(status_line)
-            .style(Style::default().add_modifier(Modifier::REVERSED)),
+        Paragraph::new(status_line).style(base_style),
         status_area,
     );
 }

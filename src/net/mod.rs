@@ -18,14 +18,14 @@
 //!   - The task gracefully shuts down when either the TCP stream closes or the
 //!     UI drops its end of the channel.
 
-use std::{sync::Arc, time::Duration};
+use std::{sync::Arc, time::{Duration, Instant}};
 
 use bytes::BytesMut;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
     sync::mpsc,
-    time::timeout,
+    time::{interval, timeout, MissedTickBehavior},
 };
 use tokio_rustls::{
     rustls::{self, ClientConfig, RootCertStore},
@@ -44,6 +44,7 @@ const DO: u8 = 0xFD;
 const DONT: u8 = 0xFE;
 const SB: u8 = 0xFA;
 const SE: u8 = 0xF0;
+const AYT: u8 = 0xF6;
 
 // Telnet option codes
 const OPT_ECHO: u8 = 0x01;
@@ -52,6 +53,44 @@ const OPT_GMCP: u8 = 0xC9;
 
 /// Connect timeout.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// Periodic best-effort latency probe interval.
+const LATENCY_PROBE_INTERVAL: Duration = Duration::from_secs(30);
+/// Maximum age for a user-command latency sample.
+const USER_LATENCY_MAX_AGE: Duration = Duration::from_secs(10);
+/// Maximum age for a probe latency sample.
+const PROBE_LATENCY_MAX_AGE: Duration = Duration::from_secs(3);
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum LatencySource {
+    UserCommand,
+    Probe,
+}
+
+#[derive(Copy, Clone, Debug)]
+struct PendingLatency {
+    started: Instant,
+    source: LatencySource,
+}
+
+impl PendingLatency {
+    fn new(source: LatencySource) -> Self {
+        Self {
+            started: Instant::now(),
+            source,
+        }
+    }
+
+    fn max_age(self) -> Duration {
+        match self.source {
+            LatencySource::UserCommand => USER_LATENCY_MAX_AGE,
+            LatencySource::Probe => PROBE_LATENCY_MAX_AGE,
+        }
+    }
+
+    fn is_stale(self) -> bool {
+        self.started.elapsed() > self.max_age()
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Message types
@@ -68,7 +107,7 @@ pub enum NetEvent {
     Connected,
     /// The connection was lost or refused.
     Disconnected(String),
-    /// A latency sample in milliseconds (placeholder, filled in Phase 5).
+    /// A latency sample in milliseconds.
     Latency(u64),
 }
 
@@ -415,6 +454,12 @@ async fn connection_loop(
     // 1 = send password on next PROMPT
     // 2 = done
     let mut auto_login_step: u8 = if auto_login.is_some() { 0 } else { 2 };
+    // Approximate round-trip latency: timestamp an outstanding user command
+    // (or periodic probe) and sample when the next server output arrives.
+    // Stale timestamps are dropped so unrelated output does not create spikes.
+    let mut pending_latency: Option<PendingLatency> = None;
+    let mut latency_probe = interval(LATENCY_PROBE_INTERVAL);
+    latency_probe.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     loop {
         tokio::select! {
@@ -497,6 +542,16 @@ async fn connection_loop(
                             line_buf.clear();
                             line_buf.push_str(&tail);
                         }
+
+                        if had_complete_lines || had_prompt {
+                            if let Some(pending) = pending_latency.take() {
+                                if !pending.is_stale() {
+                                    let elapsed = pending.started.elapsed().as_millis();
+                                    let latency_ms = u64::try_from(elapsed).unwrap_or(u64::MAX);
+                                    let _ = tx.send(NetEvent::Latency(latency_ms)).await;
+                                }
+                            }
+                        }
                     }
                     Err(e) => {
                         error!("Read error: {e}");
@@ -522,6 +577,10 @@ async fn connection_loop(
                             let _ = tx.send(NetEvent::Disconnected(e.to_string())).await;
                             break;
                         }
+                        if !matches!(pending_latency, Some(PendingLatency { source: LatencySource::UserCommand, .. })) {
+                            // A real user command takes precedence over any probe sample.
+                            pending_latency = Some(PendingLatency::new(LatencySource::UserCommand));
+                        }
                     }
                     Some(UiEvent::Resize { cols, rows }) => {
                         let naws = naws_packet(cols, rows);
@@ -529,6 +588,21 @@ async fn connection_loop(
                             warn!("Failed to send NAWS on resize: {e}");
                         }
                     }
+                }
+            }
+
+            _ = latency_probe.tick() => {
+                if pending_latency.map(|p| p.is_stale()).unwrap_or(false) {
+                    pending_latency = None;
+                }
+                if pending_latency.is_some() {
+                    continue;
+                }
+                let probe = [IAC, AYT];
+                if let Err(e) = writer.write_all(&probe).await {
+                    warn!("Failed to send latency probe: {e}");
+                } else {
+                    pending_latency = Some(PendingLatency::new(LatencySource::Probe));
                 }
             }
         }

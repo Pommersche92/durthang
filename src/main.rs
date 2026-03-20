@@ -268,7 +268,7 @@ fn drain_net_events(app: &mut App) {
                 break;
             }
             Ok(NetEvent::Latency(ms)) => {
-                app.game.latency = Some(ms);
+                app.game.record_latency(ms);
             }
             Err(_) => break,
         }
