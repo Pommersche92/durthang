@@ -1,223 +1,247 @@
 #!/usr/bin/env bash
-# =============================================================================
-# Durthang — release.sh
-# Copyright (c) 2026 Raimo Geisel
-# SPDX-License-Identifier: GPL-3.0-only
 #
-# Creates a versioned GitHub release with:
-#   • Linux AppImage   (durthang-<ver>-x86_64-linux.AppImage)
-#   • Linux tarball    (durthang-<ver>-x86_64-linux.tar.gz)   ← also used by AUR
-#   • Windows zip      (durthang-<ver>-x86_64-windows.zip)
-# Then publishes/updates the durthang-bin AUR package.
+# Complete Release Pipeline for Durthang
+# Usage: ./scripts/release.sh [OPTIONS]
 #
-# Prerequisites
-# ─────────────
-#   rustup target add x86_64-unknown-linux-musl x86_64-pc-windows-gnu
-#   cargo install cross          # or install mingw-w64 + musl-tools natively
-#   gh                           # GitHub CLI, logged in  (gh auth login)
-#   appimagetool                 # from https://github.com/AppImage/AppImageKit
-#   zip
-#   makepkg                      # Arch Linux or a Docker container with it
+# This script automates the complete release process:
+# 1. Runs tests
+# 2. Publishes to crates.io
+# 3. Creates GitHub release with binary assets
+# 4. Deploys to AUR (durthang and durthang-bin)
 #
-# Usage
-# ─────
-#   bash scripts/release.sh [--skip-aur] [--skip-windows] [--skip-appimage]
-# =============================================================================
 
 set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-cd "$REPO_ROOT"
 
-# ── option flags ─────────────────────────────────────────────────────────────
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m' # No Color
+
+# Configuration
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CARGO_TOML="${PROJECT_ROOT}/Cargo.toml"
+
+# Parse arguments
+DRAFT_MODE=false
+SKIP_CRATES=false
+SKIP_GITHUB=false
 SKIP_AUR=false
-SKIP_WINDOWS=false
-SKIP_APPIMAGE=false
-for arg in "$@"; do
-  case "$arg" in
-    --skip-aur)       SKIP_AUR=true ;;
-    --skip-windows)   SKIP_WINDOWS=true ;;
-    --skip-appimage)  SKIP_APPIMAGE=true ;;
-    *) echo "Unknown option: $arg" >&2; exit 1 ;;
-  esac
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --draft)
+            DRAFT_MODE=true
+            shift
+            ;;
+        --skip-crates)
+            SKIP_CRATES=true
+            shift
+            ;;
+        --skip-github)
+            SKIP_GITHUB=true
+            shift
+            ;;
+        --skip-aur)
+            SKIP_AUR=true
+            shift
+            ;;
+        -h|--help)
+            echo "Usage: $0 [OPTIONS]"
+            echo ""
+            echo "Complete release pipeline: crates.io → GitHub → AUR"
+            echo ""
+            echo "Options:"
+            echo "  --draft              Create GitHub release as draft"
+            echo "  --skip-crates        Skip crates.io publish"
+            echo "  --skip-github        Skip GitHub release"
+            echo "  --skip-aur           Skip AUR deployment"
+            echo "  -h, --help           Show this help message"
+            echo ""
+            echo "Examples:"
+            echo "  $0                   # Full release pipeline"
+            echo "  $0 --draft           # Create draft GitHub release"
+            echo "  $0 --skip-crates     # Skip crates.io (already published)"
+            exit 0
+            ;;
+        *)
+            echo -e "${RED}Unknown option: $1${NC}"
+            exit 1
+            ;;
+    esac
 done
 
-# ── helpers ───────────────────────────────────────────────────────────────────
-die()     { echo "❌  $*" >&2; exit 1; }
-info()    { echo; echo "▶  $*"; }
-ok()      { echo "✅  $*"; }
-require() {
-  local cmd="$1" hint="${2:-}"
-  command -v "$cmd" &>/dev/null || die "Required command not found: $cmd${hint:+ — $hint}"
+# Helper functions
+log_info()    { echo -e "${BLUE}ℹ${NC} $1" >&2; }
+log_success() { echo -e "${GREEN}✓${NC} $1" >&2; }
+log_warning() { echo -e "${YELLOW}⚠${NC} $1" >&2; }
+log_error()   { echo -e "${RED}✗${NC} $1" >&2; }
+log_step()    { echo -e "${CYAN}${BOLD}▶ $1${NC}" >&2; }
+separator()   { echo "" >&2; echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2; echo "" >&2; }
+
+get_version() {
+    grep '^version = ' "$CARGO_TOML" | head -n1 | sed 's/version = "\(.*\)"/\1/'
 }
 
-# ── version from Cargo.toml ───────────────────────────────────────────────────
-VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/version *= *"\(.*\)"/\1/')
-TAG="v${VERSION}"
-DIST="${REPO_ROOT}/dist"
-mkdir -p "$DIST"
+confirm() {
+    local prompt="$1"
+    echo -e -n "${YELLOW}❓${NC} $prompt (y/N): " >&2
+    read -r response
+    case "$response" in
+        [yY][eE][sS]|[yY]) return 0 ;;
+        *) return 1 ;;
+    esac
+}
 
-echo "═══════════════════════════════════════════════"
-echo " 🏰  Durthang ${TAG} — release script"
-echo "═══════════════════════════════════════════════"
+run_tests() {
+    log_step "Running tests..."
+    echo ""
+    if cargo test; then
+        log_success "All tests passed"
+        return 0
+    else
+        log_error "Tests failed"
+        return 1
+    fi
+}
 
-# ── prerequisite checks ───────────────────────────────────────────────────────
-require gh  "install from https://cli.github.com/ and run: gh auth login"
-require zip "sudo pacman -S zip  /  sudo apt install zip"
+publish_crates() {
+    log_step "Publishing to crates.io..."
+    echo ""
+    if ! confirm "Publish version $VERSION to crates.io?"; then
+        log_warning "Skipping crates.io publish"
+        return 0
+    fi
+    if cargo publish; then
+        log_success "Published to crates.io"
+        log_info "Waiting 30 seconds for crates.io to sync..."
+        sleep 30
+        return 0
+    else
+        log_error "Failed to publish to crates.io"
+        return 1
+    fi
+}
 
-LINUX_TARGET="x86_64-unknown-linux-musl"
-WIN_TARGET="x86_64-pc-windows-gnu"
+create_github_release() {
+    log_step "Creating GitHub release..."
+    echo ""
+    local extra_args=""
+    [ "$DRAFT_MODE" = true ] && extra_args="--draft"
+    if "${PROJECT_ROOT}/scripts/release-github.sh" $extra_args; then
+        log_success "GitHub release created"
+        log_info "Waiting 10 seconds for GitHub to process release..."
+        sleep 10
+        return 0
+    else
+        log_error "Failed to create GitHub release"
+        return 1
+    fi
+}
 
-# Prefer `cross` (Docker-based cross-compiler) but fall back to native cargo
-# if the required Rust target and system linker are already installed.
-if command -v cross &>/dev/null; then
-  CARGO_CMD="cross"
-  info "Using 'cross' for cross-compilation (Docker required)"
-else
-  CARGO_CMD="cargo"
-  info "Using native 'cargo' — ensure the toolchain targets are installed:"
-  echo "    rustup target add ${LINUX_TARGET} ${WIN_TARGET}"
-fi
+deploy_aur() {
+    log_step "Deploying to AUR..."
+    echo ""
+    if ! confirm "Deploy to AUR (durthang and durthang-bin)?"; then
+        log_warning "Skipping AUR deployment"
+        return 0
+    fi
+    if "${PROJECT_ROOT}/scripts/deploy-aur.sh" --push; then
+        log_success "Deployed to AUR"
+        return 0
+    else
+        log_error "Failed to deploy to AUR"
+        return 1
+    fi
+}
 
-if [[ "$SKIP_APPIMAGE" == false ]]; then
-  require appimagetool "download from https://github.com/AppImage/AppImageKit/releases"
-fi
+display_summary() {
+    separator
+    echo -e "${GREEN}${BOLD}🎉 Release Complete!${NC}"
+    separator
 
-# ── build Linux (musl, fully static) ─────────────────────────────────────────
-info "Building Linux binary (${LINUX_TARGET})…"
-"$CARGO_CMD" build --release --target "$LINUX_TARGET"
-LINUX_BIN="target/${LINUX_TARGET}/release/durthang"
-[[ -f "$LINUX_BIN" ]] || die "Linux binary not found at $LINUX_BIN"
-ok "Linux binary: $LINUX_BIN  ($(du -h "$LINUX_BIN" | cut -f1))"
+    echo -e "${BOLD}Version:${NC} v$VERSION"
+    echo ""
 
-# ── build Windows ─────────────────────────────────────────────────────────────
-if [[ "$SKIP_WINDOWS" == false ]]; then
-  info "Building Windows binary (${WIN_TARGET})…"
-  "$CARGO_CMD" build --release --target "$WIN_TARGET"
-  WIN_BIN="target/${WIN_TARGET}/release/durthang.exe"
-  [[ -f "$WIN_BIN" ]] || die "Windows binary not found at $WIN_BIN"
-  ok "Windows binary: $WIN_BIN  ($(du -h "$WIN_BIN" | cut -f1))"
-fi
+    if [ "$SKIP_CRATES" = false ]; then
+        echo -e "${BOLD}📦 crates.io:${NC}"
+        echo "   https://crates.io/crates/durthang"
+        echo ""
+    fi
 
-# ── Linux tarball (used by GitHub release and AUR) ────────────────────────────
-LINUX_TGZ="${DIST}/durthang-${VERSION}-x86_64-linux.tar.gz"
-info "Creating Linux tarball…"
-tar -czf "$LINUX_TGZ" -C "$(dirname "$LINUX_BIN")" "$(basename "$LINUX_BIN")"
-ok "$(basename "$LINUX_TGZ")  ($(du -h "$LINUX_TGZ" | cut -f1))"
+    if [ "$SKIP_GITHUB" = false ]; then
+        echo -e "${BOLD}🐙 GitHub:${NC}"
+        if [ "$DRAFT_MODE" = true ]; then
+            echo "   https://github.com/Pommersche92/durthang/releases (DRAFT)"
+        else
+            echo "   https://github.com/Pommersche92/durthang/releases/tag/v$VERSION"
+        fi
+        echo "   Assets: Linux x64 tarball, Linux AppImage, Windows x64 zip"
+        echo ""
+    fi
 
-# ── Windows zip ──────────────────────────────────────────────────────────────
-if [[ "$SKIP_WINDOWS" == false ]]; then
-  WIN_ZIP="${DIST}/durthang-${VERSION}-x86_64-windows.zip"
-  info "Creating Windows zip…"
-  zip -j "$WIN_ZIP" "$WIN_BIN"
-  ok "$(basename "$WIN_ZIP")  ($(du -h "$WIN_ZIP" | cut -f1))"
-fi
+    if [ "$SKIP_AUR" = false ]; then
+        echo -e "${BOLD}🐧 AUR:${NC}"
+        echo "   https://aur.archlinux.org/packages/durthang"
+        echo "   https://aur.archlinux.org/packages/durthang-bin"
+        echo ""
+    fi
 
-# ── AppImage ──────────────────────────────────────────────────────────────────
-if [[ "$SKIP_APPIMAGE" == false ]]; then
-  info "Creating AppImage…"
+    echo -e "${BOLD}Installation:${NC}"
+    echo "   cargo install durthang"
+    echo "   yay -S durthang"
+    echo "   yay -S durthang-bin"
+    echo ""
+}
 
-  APPDIR="$(mktemp -d)/durthang.AppDir"
-  mkdir -p "${APPDIR}/usr/bin"
-  cp "$LINUX_BIN" "${APPDIR}/usr/bin/durthang"
-  chmod +x "${APPDIR}/usr/bin/durthang"
+main() {
+    cd "$PROJECT_ROOT"
 
-  # AppRun launcher
-  cat > "${APPDIR}/AppRun" <<'APPRUN'
-#!/bin/sh
-exec "$(dirname "$(readlink -f "$0")")/usr/bin/durthang" "$@"
-APPRUN
-  chmod +x "${APPDIR}/AppRun"
+    echo ""
+    echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}${BOLD}          🏰 Durthang Release Pipeline 🏰${NC}"
+    echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
 
-  # .desktop file  (Terminal=true is required for a TUI application)
-  cat > "${APPDIR}/durthang.desktop" <<DESKTOP
-[Desktop Entry]
-Name=Durthang
-Comment=A modern, terminal-based MUD client
-Exec=durthang
-Icon=durthang
-Type=Application
-Categories=Game;Network;
-Terminal=true
-DESKTOP
+    VERSION=$(get_version)
+    log_info "Version: $VERSION"
+    echo ""
 
-  # Icon — look for one in common locations; create a minimal fallback
-  ICON_SRC=""
-  for candidate in \
-    "${REPO_ROOT}/docs/durthang.png" \
-    "${REPO_ROOT}/docs/icon.png" \
-    "${REPO_ROOT}/assets/durthang.png"; do
-    [[ -f "$candidate" ]] && { ICON_SRC="$candidate"; break; }
-  done
+    log_info "Pipeline steps:"
+    echo ""
+    [ "$SKIP_CRATES" = false ] && echo "  1. ✓ Publish to crates.io" || echo "  1. ✗ Skip crates.io"
+    [ "$SKIP_GITHUB" = false ] && echo "  2. ✓ Create GitHub release (Linux tarball, AppImage, Windows zip)" || echo "  2. ✗ Skip GitHub release"
+    [ "$SKIP_AUR"    = false ] && echo "  3. ✓ Deploy to AUR (durthang + durthang-bin)" || echo "  3. ✗ Skip AUR"
+    echo ""
 
-  if [[ -n "$ICON_SRC" ]]; then
-    cp "$ICON_SRC" "${APPDIR}/durthang.png"
-  elif command -v convert &>/dev/null; then
-    # ImageMagick fallback — dark ember-coloured square
-    convert -size 256x256 xc:'#0c0a08' \
-            -fill '#c84a12' -font DejaVu-Sans -pointsize 96 \
-            -gravity center -annotate 0 'D' \
-            "${APPDIR}/durthang.png" 2>/dev/null
-    echo "⚠️   No icon found — generated a placeholder. Place docs/durthang.png (512×512) for a real icon."
-  else
-    die "No icon found and ImageMagick is not available.\nPlace docs/durthang.png (512×512 PNG) and re-run, or install ImageMagick."
-  fi
+    separator
 
-  APPIMAGE="${DIST}/durthang-${VERSION}-x86_64-linux.AppImage"
-  ARCH=x86_64 appimagetool "$APPDIR" "$APPIMAGE"
-  chmod +x "$APPIMAGE"
-  ok "$(basename "$APPIMAGE")  ($(du -h "$APPIMAGE" | cut -f1))"
-fi
+    if ! run_tests; then
+        log_error "Tests must pass before release"
+        exit 1
+    fi
 
-# ── checksums ─────────────────────────────────────────────────────────────────
-info "Computing SHA-256 checksums…"
-CHECKSUM_FILE="${DIST}/durthang-${VERSION}-sha256sums.txt"
-sha256sum "${DIST}/durthang-${VERSION}-"* > "$CHECKSUM_FILE"
-cat "$CHECKSUM_FILE"
+    separator
 
-# ── GitHub release ────────────────────────────────────────────────────────────
-info "Creating GitHub release ${TAG}…"
+    if [ "$SKIP_CRATES" = false ]; then
+        publish_crates || exit 1
+        separator
+    fi
 
-RELEASE_ASSETS=("$LINUX_TGZ" "$CHECKSUM_FILE")
-[[ "$SKIP_WINDOWS"  == false ]] && RELEASE_ASSETS+=("$WIN_ZIP")
-[[ "$SKIP_APPIMAGE" == false ]] && RELEASE_ASSETS+=("$APPIMAGE")
+    if [ "$SKIP_GITHUB" = false ]; then
+        create_github_release || exit 1
+        separator
+    fi
 
-APPIMAGE_ROW=""
-[[ "$SKIP_APPIMAGE" == false ]] && APPIMAGE_ROW="| 🐧 Linux AppImage | \`durthang-${VERSION}-x86_64-linux.AppImage\` |"
-WINDOWS_ROW=""
-[[ "$SKIP_WINDOWS" == false ]] && WINDOWS_ROW="| 🪟 Windows (zip)  | \`durthang-${VERSION}-x86_64-windows.zip\` |"
+    if [ "$SKIP_AUR" = false ]; then
+        deploy_aur || exit 1
+        separator
+    fi
 
-gh release create "$TAG" \
-  --title "🏰 Durthang ${TAG}" \
-  --notes "## What's new
+    display_summary
+}
 
-<!-- Add release notes here -->
-
-## Downloads
-
-| Platform | File |
-|---|---|
-| 🐧 Linux (tarball) | \`durthang-${VERSION}-x86_64-linux.tar.gz\` |
-${APPIMAGE_ROW}
-${WINDOWS_ROW}
-| 🦀 crates.io | \`cargo install durthang\` |
-
-## SHA-256 checksums
-
-\`\`\`
-$(cat "$CHECKSUM_FILE")
-\`\`\`" \
-  "${RELEASE_ASSETS[@]}"
-
-ok "GitHub release: https://github.com/Pommersche92/durthang/releases/tag/${TAG}"
-
-# ── AUR ───────────────────────────────────────────────────────────────────────
-if [[ "$SKIP_AUR" == false ]]; then
-  info "Publishing AUR package (durthang-bin)…"
-  bash "${SCRIPT_DIR}/aur/update-aur.sh" "$VERSION" "$LINUX_TGZ"
-fi
-
-echo
-echo "═══════════════════════════════════════════════"
-echo " 🎉  Durthang ${TAG} released successfully!"
-echo "═══════════════════════════════════════════════"
+main

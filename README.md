@@ -293,21 +293,31 @@ cargo test
 
 ---
 
-## � Releasing
+## 🚢 Releasing
 
 All release automation lives in `scripts/`.
+
+### Scripts Overview
+
+| Script | Purpose |
+|---|---|
+| `scripts/release.sh` | Full pipeline: tests → crates.io → GitHub → AUR |
+| `scripts/release-github.sh` | Build assets and create/update a GitHub release |
+| `scripts/build-appimage.sh` | Build a Linux AppImage (auto-downloads `linuxdeploy`) |
+| `scripts/deploy-aur.sh` | Update and push `durthang` + `durthang-bin` PKGBUILDs to AUR |
 
 ### Prerequisites
 
 | Tool | Purpose | Install |
 |---|---|---|
 | `gh` | GitHub CLI — creates releases and uploads assets | [cli.github.com](https://cli.github.com/) → `gh auth login` |
-| `cross` | Docker-based cross-compiler (preferred) | `cargo install cross` |
-| `rustup` targets | Needed if **not** using `cross` | `rustup target add x86_64-unknown-linux-musl x86_64-pc-windows-gnu` |
-| `zip` | Windows zip packaging | `sudo pacman -S zip` / `sudo apt install zip` |
-| `appimagetool` | Builds the Linux AppImage | [AppImageKit releases](https://github.com/AppImage/AppImageKit/releases) |
-| `makepkg` | Generates `.SRCINFO` for AUR | Arch Linux or an Arch-based Docker container |
+| `gcc-mingw-w64-x86-64` | Windows cross-compile linker | `sudo apt install gcc-mingw-w64-x86-64` / `sudo pacman -S mingw-w64-gcc` |
+| `zip` | Windows zip packaging | `sudo apt install zip` / `sudo pacman -S zip` |
+| `makepkg` | Generates `.SRCINFO` for AUR (optional) | Arch Linux or an Arch-based container |
 | AUR SSH key | Authenticates pushes to AUR | Add public key at [aur.archlinux.org/account](https://aur.archlinux.org/account/) |
+
+> `linuxdeploy` (AppImage builder) is downloaded automatically into
+> `target/appimage-build/` on first use — no manual install needed.
 
 **Recommended SSH config** for AUR (`~/.ssh/config`):
 
@@ -317,47 +327,65 @@ Host aur.archlinux.org
     User aur
 ```
 
-**Optional — AppImage icon:**  
-Place a `docs/durthang.png` (512 × 512 px) in the repo root. If absent, a
-placeholder is generated via ImageMagick (`convert`).
+**Optional — AppImage icon:**
+Place a `docs/durthang.png` (256 × 256 px or larger) in the repo. If absent,
+a placeholder is generated via ImageMagick (`convert`), or a 1×1 fallback is
+used so the build does not abort.
+
+### AUR one-time setup
+
+Before the first `--push` to AUR, clone both package repos:
+
+```bash
+mkdir -p aur/durthang
+git clone ssh://aur@aur.archlinux.org/durthang.git aur/durthang/aur-repo
+
+mkdir -p aur/durthang-bin
+git clone ssh://aur@aur.archlinux.org/durthang-bin.git aur/durthang-bin/aur-repo
+```
 
 ### Running a release
 
 ```bash
-# Full release: GitHub + AppImage + Windows zip + AUR
-bash scripts/release.sh
+# Full release: crates.io + GitHub + AppImage + Windows zip + AUR
+./scripts/release.sh
+
+# Draft GitHub release (safe to iterate on)
+./scripts/release.sh --draft
 
 # Skip individual steps
-bash scripts/release.sh --skip-appimage   # no AppImage
-bash scripts/release.sh --skip-windows    # no Windows build
-bash scripts/release.sh --skip-aur        # no AUR push
+./scripts/release.sh --skip-crates        # already published to crates.io
+./scripts/release.sh --skip-github        # skip GitHub release
+./scripts/release.sh --skip-aur           # skip AUR push
 ```
 
-The script automatically reads the version from `Cargo.toml`, so bump it there
-(and in the `CHANGELOG` / `git tag`) before running.
-
-All build artefacts land in `dist/` (git-ignored):
+All build artefacts land in `target/dist/` (git-ignored):
 
 ```
-dist/
-  durthang-<ver>-x86_64-linux.tar.gz      ← used by AUR and GitHub release
-  durthang-<ver>-x86_64-linux.AppImage
-  durthang-<ver>-x86_64-windows.zip
-  durthang-<ver>-sha256sums.txt
+target/dist/
+  durthang-<ver>-x86_64.tar.gz           ← Linux tarball (GitHub + AUR source)
+  durthang-<ver>-x86_64.AppImage         ← Linux AppImage
+  durthang-<ver>-x86_64-windows.zip      ← Windows binary zip
 ```
 
 ### AUR-only update
 
-If you only need to bump the AUR package without creating a full GitHub release:
+To push only a version bump to AUR without a full release:
 
 ```bash
-bash scripts/aur/update-aur.sh <VERSION> dist/durthang-<VERSION>-x86_64-linux.tar.gz
+# Dry-run (no push) — inspect the changes first
+./scripts/deploy-aur.sh
+
+# Push both packages
+./scripts/deploy-aur.sh --push
+
+# Push only one package
+./scripts/deploy-aur.sh --push --package durthang-bin
 ```
 
-The script clones `ssh://aur@aur.archlinux.org/durthang-bin.git`, writes a
-`PKGBUILD` with the correct `pkgver` and `sha256sums`, regenerates `.SRCINFO`,
-and pushes. **First-time setup:** create the `durthang-bin` package via the
-[AUR web interface](https://aur.archlinux.org/packages/) before the first push.
+The script reads the version from `Cargo.toml`, downloads the relevant source
+or binary to compute `sha256sums`, updates both PKGBUILDs, regenerates
+`.SRCINFO` (via `makepkg --printsrcinfo`), and pushes to the AUR.
 
 ---
 
