@@ -147,8 +147,6 @@ impl GameState {
     /// Parse an ANSI string, apply trigger highlighting, and append to the scrollback buffer.
     /// Any trigger auto-sends are pushed to `auto_send_queue`.
     pub fn push_line(&mut self, s: &str) {
-        // Auto-populate sidebar panels from server output.
-        self.sidebar.process_line(s);
         let mut line = ansi_to_line(s);
         // Apply triggers.
         for trigger in &self.triggers {
@@ -270,8 +268,6 @@ impl GameState {
 
         // Expand aliases.
         let line = self.expand_alias(&raw);
-        // Prime sidebar capture for this command's upcoming output.
-        self.sidebar.on_command_sent(&line);
 
         // Echo into scrollback.
         let echo = Line::from(vec![
@@ -397,120 +393,9 @@ impl GameState {
             "disconnect" | "disc" => Some(GameAction::Disconnect),
             "quit" | "exit"      => Some(GameAction::Quit),
 
-            // ------ Character sheet (/stat) ----------------------------------
-            "stat" => {
-                if args.is_empty() {
-                    if self.sidebar.char_sheet.is_empty() {
-                        self.push_system("Char sheet empty.  Usage: /stat <key> <value>");
-                    } else {
-                        self.push_system("Char sheet:");
-                        let msgs: Vec<String> = self.sidebar.char_sheet.iter()
-                            .map(|(k, v)| format!("  {k}: {v}"))
-                            .collect();
-                        for m in msgs { self.push_system(&m); }
-                    }
-                    None
-                } else if args == "clear" {
-                    self.sidebar.clear_stats();
-                    self.push_system("Char sheet cleared.");
-                    None
-                } else {
-                    match args.split_once(' ') {
-                        None => {
-                            // /stat <key> — show single stat
-                            if let Some((_, v)) = self.sidebar.char_sheet.iter().find(|(k, _)| k == args) {
-                                self.push_system(&format!("{args}: {v}"));
-                            } else {
-                                self.push_system(&format!("Stat '{}' not found.", args));
-                            }
-                            None
-                        }
-                        Some((key, value)) => {
-                            self.sidebar.set_stat(key.to_string(), value.to_string());
-                            self.push_system(&format!("Stat set: {key} = {value}"));
-                            None
-                        }
-                    }
-                }
-            }
-
-            // ------ Paperdoll (/wear) ----------------------------------------
-            "wear" => {
-                if args.is_empty() {
-                    if self.sidebar.paperdoll.is_empty() {
-                        self.push_system("Paperdoll empty.  Usage: /wear <slot> <item> | /wear remove <slot>");
-                    } else {
-                        self.push_system("Paperdoll:");
-                        let msgs: Vec<String> = self.sidebar.paperdoll.iter()
-                            .map(|(s, i)| format!("  {s}: {i}"))
-                            .collect();
-                        for m in msgs { self.push_system(&m); }
-                    }
-                    None
-                } else if let Some(slot) = args.strip_prefix("remove ") {
-                    self.sidebar.remove_wear(slot.trim());
-                    self.push_system(&format!("Removed item from slot '{}'.", slot.trim()));
-                    None
-                } else if args == "clear" {
-                    self.sidebar.clear_paperdoll();
-                    self.push_system("Paperdoll cleared.");
-                    None
-                } else {
-                    match args.split_once(' ') {
-                        None => {
-                            self.push_system("Usage: /wear <slot> <item> | /wear remove <slot> | /wear clear");
-                            None
-                        }
-                        Some((slot, item)) => {
-                            self.sidebar.set_wear(slot.to_string(), item.to_string());
-                            self.push_system(&format!("Wearing '{}' in slot '{}'.", item, slot));
-                            None
-                        }
-                    }
-                }
-            }
-
-            // ------ Inventory (/inv) -----------------------------------------
-            "inv" | "inventory" => {
-                if args.is_empty() {
-                    if self.sidebar.inventory.is_empty() {
-                        self.push_system("Inventory empty.  Usage: /inv add <item> | /inv remove <item> | /inv clear");
-                    } else {
-                        self.push_system("Inventory:");
-                        let msgs: Vec<String> = self.sidebar.inventory.iter()
-                            .enumerate()
-                            .map(|(i, item)| format!("  {}: {}", i + 1, item))
-                            .collect();
-                        for m in msgs { self.push_system(&m); }
-                    }
-                    None
-                } else if let Some(item) = args.strip_prefix("add ") {
-                    self.sidebar.inv_add(item.trim().to_string());
-                    self.push_system(&format!("Added '{}' to inventory.", item.trim()));
-                    None
-                } else if let Some(item) = args.strip_prefix("remove ") {
-                    self.sidebar.inv_remove(item.trim());
-                    self.push_system(&format!("Removed '{}' from inventory.", item.trim()));
-                    None
-                } else if args == "clear" {
-                    self.sidebar.inv_clear();
-                    self.push_system("Inventory cleared.");
-                    None
-                } else {
-                    self.push_system("Usage: /inv [add <item> | remove <item> | clear]");
-                    None
-                }
-            }
-
             // ------ Sidebar visibility (/sidebar) ----------------------------
             "sidebar" | "sb" => {
                 match args {
-                    "left" | "l" => {
-                        self.sidebar.toggle_left();
-                        let st = if self.sidebar.layout.left_visible { "shown" } else { "hidden" };
-                        self.push_system(&format!("Left sidebar {st}."));
-                        Some(GameAction::SaveSidebarLayout)
-                    }
                     "right" | "r" => {
                         self.sidebar.toggle_right();
                         let st = if self.sidebar.layout.right_visible { "shown" } else { "hidden" };
@@ -518,9 +403,8 @@ impl GameState {
                         Some(GameAction::SaveSidebarLayout)
                     }
                     _ => {
-                        let l = if self.sidebar.layout.left_visible { "shown" } else { "hidden" };
                         let r = if self.sidebar.layout.right_visible { "shown" } else { "hidden" };
-                        self.push_system(&format!("Left: {l}  Right: {r}   /sidebar left|right to toggle"));
+                        self.push_system(&format!("Right sidebar: {r}  /sidebar right to toggle"));
                         None
                     }
                 }
@@ -699,7 +583,7 @@ impl GameState {
 
             _ => {
                 self.push_system(&format!("Unknown command: {input}"));
-                self.push_system("  Available: /alias, /unalias, /trigger, /stat, /wear, /inv, /sidebar, /map, /disconnect, /quit");
+                self.push_system("  Available: /alias, /unalias, /trigger, /sidebar, /map, /disconnect, /quit");
                 None
             }
         }
@@ -936,12 +820,6 @@ pub fn handle_key(state: &mut GameState, key: KeyEvent) -> Option<GameAction> {
     // F-key sidebar controls.
     if let KeyCode::F(n) = key.code {
         match n {
-            2 => {
-                if state.sidebar.toggle_left() {
-                    return Some(GameAction::SaveSidebarLayout);
-                }
-                return None;
-            }
             3 => {
                 if state.sidebar.toggle_right() {
                     return Some(GameAction::SaveSidebarLayout);
@@ -971,7 +849,6 @@ pub fn handle_key(state: &mut GameState, key: KeyEvent) -> Option<GameAction> {
         return match sidebar::handle_sidebar_key(&mut state.sidebar, key) {
             SidebarKeyResult::FocusGame  => { state.sidebar.focused_panel = None; None }
             SidebarKeyResult::SaveLayout => Some(GameAction::SaveSidebarLayout),
-            SidebarKeyResult::SendLine(cmd) => Some(GameAction::SendLine(cmd)),
             SidebarKeyResult::Consumed | SidebarKeyResult::Unhandled => None,
         };
     }
@@ -1285,46 +1162,24 @@ pub fn draw(frame: &mut Frame, state: &mut GameState, server_name: &str, char_na
     ])
     .areas(area);
 
-    // Horizontal split: optional left sidebar | game column | optional right sidebar.
-    let has_left  = state.sidebar.has_side_panels(&SidebarSide::Left);
-    let has_right = state.sidebar.has_side_panels(&SidebarSide::Right);
-    let show_left  = has_left  && state.sidebar.layout.left_visible;
+    // Horizontal split: game column | optional right sidebar.
+    let has_right  = state.sidebar.has_side_panels(&SidebarSide::Right);
     let show_right = has_right && state.sidebar.layout.right_visible;
 
     const MIN_GAME_W: u16 = 20;
-    let left_w = if show_left {
-        state.sidebar.layout.left_width
-            .min(content_area.width.saturating_sub(MIN_GAME_W))
-    } else { 0 };
     let right_w = if show_right {
         state.sidebar.layout.right_width
-            .min(content_area.width.saturating_sub(left_w + MIN_GAME_W))
+            .min(content_area.width.saturating_sub(MIN_GAME_W))
     } else { 0 };
 
-    let (left_area_opt, game_col, right_area_opt) = match (left_w > 0, right_w > 0) {
-        (true, true) => {
-            let c = Layout::horizontal([
-                Constraint::Length(left_w),
-                Constraint::Fill(1),
-                Constraint::Length(right_w),
-            ]).split(content_area);
-            (Some(c[0]), c[1], Some(c[2]))
-        }
-        (true, false) => {
-            let c = Layout::horizontal([
-                Constraint::Length(left_w),
-                Constraint::Fill(1),
-            ]).split(content_area);
-            (Some(c[0]), c[1], None)
-        }
-        (false, true) => {
-            let c = Layout::horizontal([
-                Constraint::Fill(1),
-                Constraint::Length(right_w),
-            ]).split(content_area);
-            (None, c[0], Some(c[1]))
-        }
-        (false, false) => (None, content_area, None),
+    let (game_col, right_area_opt) = if right_w > 0 {
+        let c = Layout::horizontal([
+            Constraint::Fill(1),
+            Constraint::Length(right_w),
+        ]).split(content_area);
+        (c[0], Some(c[1]))
+    } else {
+        (content_area, None)
     };
 
     // Game column: [output area | input block (3 rows: border + content + border)]
@@ -1435,7 +1290,7 @@ pub fn draw(frame: &mut Frame, state: &mut GameState, server_name: &str, char_na
     );
 
     // --- Sidebars ---
-    sidebar::draw(frame, &state.sidebar, area, left_area_opt, right_area_opt);
+    sidebar::draw(frame, &state.sidebar, area, None, right_area_opt);
 
     if state.map_fullscreen {
         frame.render_widget(Clear, content_area);

@@ -59,29 +59,31 @@ impl Trigger {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PanelKind {
-    CharSheet,
-    Paperdoll,
-    Inventory,
     Automap,
+    Notes,
+    /// Legacy — silently filtered out when loading old configs.
+    #[doc(hidden)] CharSheet,
+    /// Legacy — silently filtered out when loading old configs.
+    #[doc(hidden)] Paperdoll,
+    /// Legacy — silently filtered out when loading old configs.
+    #[doc(hidden)] Inventory,
 }
 
 impl PanelKind {
     pub fn label(&self) -> &'static str {
         match self {
-            PanelKind::CharSheet => "Character Sheet",
-            PanelKind::Paperdoll => "Paperdoll",
-            PanelKind::Inventory => "Inventory",
-            PanelKind::Automap   => "Automap",
+            PanelKind::Automap => "Automap",
+            PanelKind::Notes   => "Notes",
+            _                  => "Legacy",
         }
     }
 
     /// Short label used in the sidebar tab bar.
     pub fn short_label(&self) -> &'static str {
         match self {
-            PanelKind::CharSheet => "Stats",
-            PanelKind::Paperdoll => "Wear",
-            PanelKind::Inventory => "Inv",
-            PanelKind::Automap   => "Map",
+            PanelKind::Automap => "Map",
+            PanelKind::Notes   => "Notes",
+            _                  => "---",
         }
     }
 }
@@ -108,29 +110,19 @@ pub struct PanelConfig {
 }
 
 fn default_panel_height_pct() -> u8  { 50 }
-fn default_left_visible()    -> bool { true }
 fn default_right_visible()   -> bool { true }
-fn default_left_width()      -> u16  { 26 }
 fn default_right_width()     -> u16  { 26 }
 
 fn default_panels() -> Vec<PanelConfig> {
     vec![
-        PanelConfig { kind: PanelKind::CharSheet, side: Some(SidebarSide::Left),  height_pct: 40  },
-        PanelConfig { kind: PanelKind::Paperdoll, side: Some(SidebarSide::Left),  height_pct: 60  },
-        PanelConfig { kind: PanelKind::Automap,   side: Some(SidebarSide::Right), height_pct: 35  },
-        PanelConfig { kind: PanelKind::Inventory, side: Some(SidebarSide::Right), height_pct: 65  },
+        PanelConfig { kind: PanelKind::Automap, side: Some(SidebarSide::Right), height_pct: 35 },
+        PanelConfig { kind: PanelKind::Notes,   side: Some(SidebarSide::Right), height_pct: 65 },
     ]
 }
 
 /// Per-character sidebar layout persisted in the config file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SidebarLayout {
-    /// Whether the left sidebar column is shown.
-    #[serde(default = "default_left_visible")]
-    pub left_visible: bool,
-    /// Width of the left sidebar column in terminal characters.
-    #[serde(default = "default_left_width")]
-    pub left_width: u16,
     /// Whether the right sidebar column is shown.
     #[serde(default = "default_right_visible")]
     pub right_visible: bool,
@@ -140,16 +132,18 @@ pub struct SidebarLayout {
     /// Panel configurations (kind, side assignment, relative height).
     #[serde(default = "default_panels")]
     pub panels: Vec<PanelConfig>,
+    /// User-created notes shown in the Notes panel.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 impl Default for SidebarLayout {
     fn default() -> Self {
         Self {
-            left_visible:  true,
-            left_width:    26,
             right_visible: true,
             right_width:   26,
             panels: default_panels(),
+            notes: Vec::new(),
         }
     }
 }
