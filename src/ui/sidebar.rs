@@ -19,6 +19,7 @@ use ratatui::{
 use regex::Regex;
 
 use crate::config::{PanelConfig, PanelKind, SidebarLayout, SidebarSide};
+use crate::map::{Direction, WorldMap};
 
 // ---------------------------------------------------------------------------
 // Key result
@@ -178,6 +179,8 @@ pub struct SidebarState {
     pub paperdoll: Vec<(String, String)>,
     /// Inventory: list of item strings.
     pub inventory: Vec<String>,
+    /// Automap world state.
+    pub automap: WorldMap,
 
     // --- Interaction state ---
 
@@ -198,7 +201,8 @@ impl Default for SidebarState {
 }
 
 impl SidebarState {
-    pub fn new(layout: SidebarLayout) -> Self {
+    pub fn new(mut layout: SidebarLayout) -> Self {
+        migrate_automap_layout(&mut layout);
         Self {
             layout,
             focused_panel: None,
@@ -206,6 +210,7 @@ impl SidebarState {
             char_sheet: Vec::new(),
             paperdoll: Vec::new(),
             inventory: Vec::new(),
+            automap: WorldMap::default(),
             panel_cursor: 0,
             options_cursor: 0,
             capture_rules: default_capture_rules(),
@@ -344,6 +349,30 @@ impl SidebarState {
 
     pub fn inv_clear(&mut self) {
         self.inventory.clear();
+    }
+
+    // ------------------------------------------------------------------
+    // Automap
+    // ------------------------------------------------------------------
+
+    pub fn map_apply_gmcp(&mut self, msg: &str) -> bool {
+        self.automap.apply_gmcp_message(msg)
+    }
+
+    pub fn map_apply_output_line(&mut self, raw: &str) {
+        self.automap.apply_exits_heuristic_from_output(raw);
+    }
+
+    pub fn map_set_position(&mut self, room_id: &str, x: i32, y: i32, z: i32) {
+        self.automap.set_room_position(room_id, x, y, z);
+    }
+
+    pub fn map_link_rooms(&mut self, from_id: &str, dir: Direction, to_id: &str) {
+        self.automap.link_rooms(from_id, dir, to_id);
+    }
+
+    pub fn map_current_room_id(&self) -> Option<String> {
+        self.automap.current_room_id.clone()
     }
 
     // ------------------------------------------------------------------
@@ -515,6 +544,43 @@ impl SidebarState {
             Some(PanelKind::Inventory) => self.inventory.len(),
             Some(PanelKind::Automap)   => 0,
             None                       => 0,
+        }
+    }
+}
+
+fn migrate_automap_layout(layout: &mut SidebarLayout) {
+    let mut automap_idx = None;
+    let mut inv_idx = None;
+    for (i, p) in layout.panels.iter().enumerate() {
+        match p.kind {
+            PanelKind::Automap => automap_idx = Some(i),
+            PanelKind::Inventory => inv_idx = Some(i),
+            _ => {}
+        }
+    }
+
+    let Some(ai) = automap_idx else { return };
+
+    // If automap is not placed yet, place it at top-right as a minimap.
+    if layout.panels[ai].side.is_none() {
+        layout.panels[ai].side = Some(SidebarSide::Right);
+        layout.panels[ai].height_pct = 35;
+    }
+
+    // Keep inventory below minimap by shrinking only when inventory is the
+    // sole right-side content at 100% (old default layout).
+    if let Some(ii) = inv_idx {
+        let inv_is_old_default = layout.panels[ii].side == Some(SidebarSide::Right)
+            && layout.panels[ii].height_pct >= 100;
+        if inv_is_old_default {
+            layout.panels[ii].height_pct = 65;
+        }
+    }
+
+    // Put automap before inventory so it appears on top in the right column.
+    if let (Some(ai), Some(ii)) = (automap_idx, inv_idx) {
+        if ai > ii {
+            layout.panels.swap(ai, ii);
         }
     }
 }
@@ -763,8 +829,76 @@ fn draw_panel(frame: &mut Frame, state: &SidebarState, kind: &PanelKind, area: R
             &state.inventory.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
             state.panel_cursor, area, focused, Some("Enter/w:wear  d:drop"),
         ),
-        PanelKind::Automap => draw_placeholder(frame, "Automap\n\n(Phase 8)", area),
+        PanelKind::Automap => draw_automap_panel(frame, &state.automap, area, focused),
     }
+}
+
+fn draw_automap_panel(frame: &mut Frame, map: &WorldMap, area: Rect, focused: bool) {
+    let border_style = if focused {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let block = Block::default()
+        .title(Span::styled(
+            " Automap ",
+            border_style.add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_style(border_style);
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let Some(cur) = map.current_room() else {
+        frame.render_widget(
+            Paragraph::new("No map data yet\n(waiting for GMCP Room.Info or Exits: lines)")
+                .style(Style::default().fg(Color::DarkGray)),
+            inner,
+        );
+        return;
+    };
+
+    if inner.width < 3 || inner.height < 3 {
+        return;
+    }
+
+    let radius_x = (inner.width.saturating_sub(1) / 2) as i32;
+    let radius_y = (inner.height.saturating_sub(1) / 2) as i32;
+
+    let mut rows: Vec<Vec<char>> = vec![vec![' '; inner.width as usize]; inner.height as usize];
+
+    for dy in -radius_y..=radius_y {
+        for dx in -radius_x..=radius_x {
+            let wx = cur.x + dx;
+            let wy = cur.y + dy;
+            if let Some(room) = map.room_at(wx, wy, cur.z) {
+                let sx = (dx + radius_x) as usize;
+                let sy = (dy + radius_y) as usize;
+                if sy < rows.len() && sx < rows[sy].len() {
+                    rows[sy][sx] = if room.id == cur.id { '@' } else { '.' };
+                }
+            }
+        }
+    }
+
+    let mut lines: Vec<Line> = rows
+        .into_iter()
+        .map(|r| Line::raw(r.into_iter().collect::<String>()))
+        .collect();
+
+    // Bottom legend line in the panel body if there's enough height.
+    if !lines.is_empty() {
+        let legend = format!("@ {}  z:{}", cur.name, cur.z);
+        let idx = lines.len() - 1;
+        lines[idx] = Line::from(vec![
+            Span::styled("@", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::raw(format!(" {}", legend.trim_start_matches('@').trim_start())),
+        ]);
+    }
+
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn draw_kv_panel(

@@ -182,14 +182,17 @@ async fn run_loop(app: &mut App, terminal: &mut Terminal<CrosstermBackend<io::St
                                 }
                             }
                             Some(GameAction::Disconnect) => {
+                                save_map_quiet(app);
                                 if let Some(conn) = &app.connection {
                                     conn.disconnect().await;
                                 }
                                 app.connection = None;
+                                app.connected_server_id = None;
                                 app.game.on_disconnect();
                                 app.state = AppState::ServerSelect;
                             }
                             Some(GameAction::Quit) => {
+                                save_map_quiet(app);
                                 if let Some(conn) = &app.connection {
                                     conn.disconnect().await;
                                 }
@@ -250,20 +253,27 @@ fn drain_net_events(app: &mut App) {
             Ok(NetEvent::Line(line)) => {
                 info!(target: "game", "{line}");
                 app.game.push_line(&line);
+                app.game.sidebar.map_apply_output_line(&line);
             }
             Ok(NetEvent::Prompt(prompt)) => {
                 app.game.push_prompt(&prompt);
+                app.game.sidebar.map_apply_output_line(&prompt);
             }
             Ok(NetEvent::Connected) => {
                 info!("Network: connected");
                 app.game.on_connect();
             }
+            Ok(NetEvent::Gmcp(msg)) => {
+                app.game.sidebar.map_apply_gmcp(&msg);
+            }
             Ok(NetEvent::Disconnected(reason)) => {
                 tracing::warn!("Disconnected: {reason}");
                 let msg = format!("\x1b[33m-- Disconnected: {reason} --\x1b[0m");
                 app.game.push_line(&msg);
+                save_map_quiet(app);
                 app.game.on_disconnect();
                 app.connection = None;
+                app.connected_server_id = None;
                 app.state = AppState::ServerSelect;
                 break;
             }
@@ -317,6 +327,7 @@ async fn do_connect(app: &mut App, server_id: &str, char_id: Option<&str>) {
 
     app.connection     = Some(conn);
     app.connected_server   = Some(server.name.clone());
+    app.connected_server_id = Some(server.id.clone());
     app.connected_char     = Some(char_name);
     app.connected_char_id  = char_id_owned;
     // Clear the game view for the new session and mark as connected.
@@ -332,6 +343,15 @@ async fn do_connect(app: &mut App, server_id: &str, char_id: Option<&str>) {
         }
     }
 
+    match crate::map::load_server_map(&server.id) {
+        Ok(world) => {
+            app.game.sidebar.automap = world;
+        }
+        Err(e) => {
+            tracing::warn!("Failed to load map for server {}: {e}", server.id);
+        }
+    }
+
     app.state = AppState::Game;
 }
 
@@ -342,6 +362,13 @@ async fn do_connect(app: &mut App, server_id: &str, char_id: Option<&str>) {
 fn save_config_quiet(app: &App) {
     if let Err(e) = app.config.save(&app.config_path) {
         tracing::warn!("Failed to save config: {e}");
+    }
+}
+
+fn save_map_quiet(app: &App) {
+    let Some(server_id) = app.connected_server_id.as_deref() else { return };
+    if let Err(e) = crate::map::save_server_map(server_id, &app.game.sidebar.automap) {
+        tracing::warn!("Failed to save map for server {server_id}: {e}");
     }
 }
 

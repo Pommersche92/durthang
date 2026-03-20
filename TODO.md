@@ -60,12 +60,12 @@
 - [x] Options screen (per character) for configuring the sidebar layout
 
 ## Phase 8: Automap
-- [ ] Define internal map data model (`Room`: id, name, exits `HashMap<Direction, RoomId>`, coordinates)
-- [ ] GMCP `Room.Info` parser to auto-create rooms on arrival
-- [ ] Fallback: heuristic room detection from output text (regex on "Exits:" lines)
-- [ ] Map rendering widget (ASCII/Unicode grid, rendered in a sidebar or overlay)
-- [ ] Manual room linking / position override
-- [ ] Save/load map per server to a file (`~/.local/share/durthang/<server>.map.json`)
+- [x] Define internal map data model (`Room`: id, name, exits `HashMap<Direction, RoomId>`, coordinates)
+- [x] GMCP `Room.Info` parser to auto-create rooms on arrival
+- [x] Fallback: heuristic room detection from output text (regex on "Exits:" lines)
+- [x] Map rendering widget (ASCII/Unicode grid, rendered in a sidebar or overlay)
+- [x] Manual room linking / position override
+- [x] Save/load map per server to a file (`~/.local/share/durthang/<server>.map.json`)
 - [ ] Map export to image or plain-text grid (stretch goal)
 
 ## Phase 9: Polish & Distribution

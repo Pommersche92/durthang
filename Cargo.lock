@@ -461,6 +461,7 @@ dependencies = [
  "regex",
  "rustls-native-certs",
  "serde",
+ "serde_json",
  "tokio",
  "tokio-rustls",
  "toml",

@@ -17,12 +17,13 @@ use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Paragraph, Wrap},
+    widgets::{Block, Clear, Paragraph, Wrap},
     Frame,
 };
 use tracing::warn;
 
 use crate::config::{Alias, SidebarSide, Trigger as TriggerCfg};
+use crate::map::{Direction, WorldMap};
 use crate::ui::sidebar::{self, SidebarKeyResult, SidebarState};
 
 // ---------------------------------------------------------------------------
@@ -110,6 +111,10 @@ pub struct GameState {
     pub auto_send_queue: Vec<String>,
     /// Whether copy mode is currently active.
     pub copy_mode: bool,
+    /// Fullscreen map overlay mode.
+    pub map_fullscreen: bool,
+    /// Manual pan offset for fullscreen map viewport.
+    pub map_pan: (i32, i32, i32),
     /// Sidebar panel state (data + focus + layout).
     pub sidebar: SidebarState,
 }
@@ -133,6 +138,8 @@ impl GameState {
             triggers: Vec::new(),
             auto_send_queue: Vec::new(),
             copy_mode: false,
+            map_fullscreen: false,
+            map_pan: (0, 0, 0),
             sidebar: SidebarState::default(),
         }
     }
@@ -287,6 +294,8 @@ impl GameState {
         self.connected = true;
         self.latency = None;
         self.latency_samples.clear();
+        self.map_fullscreen = false;
+        self.map_pan = (0, 0, 0);
         self.scroll_to_bottom();
         self.prompt = None;
     }
@@ -295,6 +304,8 @@ impl GameState {
         self.connected = false;
         self.latency = None;
         self.latency_samples.clear();
+        self.map_fullscreen = false;
+        self.map_pan = (0, 0, 0);
     }
 
     pub fn record_latency(&mut self, ms: u64) {
@@ -515,6 +526,94 @@ impl GameState {
                 }
             }
 
+            // ------ Automap controls (/map) ---------------------------------
+            "map" => {
+                let (sub, rest) = args
+                    .split_once(' ')
+                    .map(|(s, r)| (s, r.trim()))
+                    .unwrap_or((args, ""));
+
+                match sub {
+                    "" | "show" => {
+                        if let Some(room) = self.sidebar.automap.current_room() {
+                            self.push_system(&format!(
+                                "Map current: id={}  name='{}'  pos=({}, {}, {})  exits={} ",
+                                room.id,
+                                room.name,
+                                room.x,
+                                room.y,
+                                room.z,
+                                room.exits.len()
+                            ));
+                        } else {
+                            self.push_system("Map: no current room yet.");
+                        }
+                        None
+                    }
+                    "setpos" => {
+                        let parts: Vec<&str> = rest.split_whitespace().collect();
+                        if parts.len() < 3 {
+                            self.push_system("Usage: /map setpos <room_id|current> <x> <y> [z]");
+                            return None;
+                        }
+                        let room_id = if parts[0] == "current" {
+                            self.sidebar.map_current_room_id().unwrap_or_else(|| "current".to_string())
+                        } else {
+                            parts[0].to_string()
+                        };
+                        let x = parts[1].parse::<i32>();
+                        let y = parts[2].parse::<i32>();
+                        let z = if parts.len() >= 4 {
+                            parts[3].parse::<i32>()
+                        } else {
+                            Ok(0)
+                        };
+                        match (x, y, z) {
+                            (Ok(x), Ok(y), Ok(z)) => {
+                                self.sidebar.map_set_position(&room_id, x, y, z);
+                                self.push_system(&format!("Map: set {room_id} -> ({x}, {y}, {z})"));
+                            }
+                            _ => self.push_system("Usage: /map setpos <room_id|current> <x> <y> [z]"),
+                        }
+                        None
+                    }
+                    "full" | "fullscreen" | "fs" => {
+                        self.map_fullscreen = !self.map_fullscreen;
+                        if self.map_fullscreen {
+                            self.map_pan = (0, 0, 0);
+                            self.push_system("Map fullscreen enabled.  Arrows pan, u/d z-level, c center, Esc/F6 close.");
+                        } else {
+                            self.push_system("Map fullscreen disabled.");
+                        }
+                        None
+                    }
+                    "link" => {
+                        let parts: Vec<&str> = rest.split_whitespace().collect();
+                        if parts.len() != 3 {
+                            self.push_system("Usage: /map link <from_id|current> <dir> <to_id>");
+                            return None;
+                        }
+                        let from_id = if parts[0] == "current" {
+                            self.sidebar.map_current_room_id().unwrap_or_else(|| "current".to_string())
+                        } else {
+                            parts[0].to_string()
+                        };
+                        let Some(dir) = Direction::parse(parts[1]) else {
+                            self.push_system("Direction must be one of n/s/e/w/u/d.");
+                            return None;
+                        };
+                        let to_id = parts[2].to_string();
+                        self.sidebar.map_link_rooms(&from_id, dir, &to_id);
+                        self.push_system(&format!("Map: linked {from_id} --{}--> {to_id}", dir.as_str()));
+                        None
+                    }
+                    _ => {
+                        self.push_system("Usage: /map [show|fullscreen|setpos <room_id|current> <x> <y> [z]|link <from_id|current> <dir> <to_id>]");
+                        None
+                    }
+                }
+            }
+
             "alias" | "al" => {
                 if args.is_empty() {
                     if self.aliases.is_empty() {
@@ -600,7 +699,7 @@ impl GameState {
 
             _ => {
                 self.push_system(&format!("Unknown command: {input}"));
-                self.push_system("  Available: /alias, /unalias, /trigger, /stat, /wear, /inv, /sidebar, /disconnect, /quit");
+                self.push_system("  Available: /alias, /unalias, /trigger, /stat, /wear, /inv, /sidebar, /map, /disconnect, /quit");
                 None
             }
         }
@@ -815,6 +914,18 @@ fn apply_sgr(mut style: Style, params: &str) -> Style {
 /// Returns `None` for all other keystrokes (pure editing operations).
 pub fn handle_key(state: &mut GameState, key: KeyEvent) -> Option<GameAction> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+    if key.code == KeyCode::F(6) {
+        state.map_fullscreen = !state.map_fullscreen;
+        if state.map_fullscreen {
+            state.map_pan = (0, 0, 0);
+        }
+        return None;
+    }
+
+    if state.map_fullscreen {
+        return handle_map_fullscreen_mode(state, key);
+    }
 
     // F1 — return keyboard focus to the game input.
     if key.code == KeyCode::F(1) {
@@ -1039,6 +1150,44 @@ fn handle_copy_mode(state: &mut GameState, key: KeyEvent) -> Option<GameAction> 
     }
 }
 
+fn handle_map_fullscreen_mode(state: &mut GameState, key: KeyEvent) -> Option<GameAction> {
+    match key.code {
+        KeyCode::Esc | KeyCode::F(6) => {
+            state.map_fullscreen = false;
+            None
+        }
+        KeyCode::Left => {
+            state.map_pan.0 -= 1;
+            None
+        }
+        KeyCode::Right => {
+            state.map_pan.0 += 1;
+            None
+        }
+        KeyCode::Up => {
+            state.map_pan.1 -= 1;
+            None
+        }
+        KeyCode::Down => {
+            state.map_pan.1 += 1;
+            None
+        }
+        KeyCode::PageUp | KeyCode::Char('u') => {
+            state.map_pan.2 += 1;
+            None
+        }
+        KeyCode::PageDown | KeyCode::Char('d') => {
+            state.map_pan.2 -= 1;
+            None
+        }
+        KeyCode::Char('c') => {
+            state.map_pan = (0, 0, 0);
+            None
+        }
+        _ => None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Trigger / color helpers
 // ---------------------------------------------------------------------------
@@ -1091,6 +1240,35 @@ fn find_kv(s: &str, key: &str) -> Option<usize> {
     let needle = format!("{key}=");
     if s.starts_with(&needle) { return Some(0); }
     s.rfind(&format!(" {needle}")).map(|p| p + 1)
+}
+
+fn build_map_lines(map: &WorldMap, width: u16, height: u16, pan: (i32, i32, i32)) -> Vec<Line<'static>> {
+    if width == 0 || height == 0 {
+        return Vec::new();
+    }
+    let Some(cur) = map.current_room() else {
+        return vec![Line::from("No map data yet")];
+    };
+
+    let half_w = (width.saturating_sub(1) / 2) as i32;
+    let half_h = (height.saturating_sub(1) / 2) as i32;
+    let z = cur.z + pan.2;
+
+    let mut rows: Vec<Vec<char>> = vec![vec![' '; width as usize]; height as usize];
+    for sy in 0..height as i32 {
+        for sx in 0..width as i32 {
+            let wx = cur.x + pan.0 + (sx - half_w);
+            let wy = cur.y + pan.1 + (sy - half_h);
+            if let Some(room) = map.room_at(wx, wy, z) {
+                rows[sy as usize][sx as usize] = if room.id == cur.id && z == cur.z { '@' } else { '.' };
+            }
+        }
+    }
+
+    rows
+        .into_iter()
+        .map(|r| Line::raw(r.into_iter().collect::<String>()))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1259,6 +1437,21 @@ pub fn draw(frame: &mut Frame, state: &mut GameState, server_name: &str, char_na
     // --- Sidebars ---
     sidebar::draw(frame, &state.sidebar, area, left_area_opt, right_area_opt);
 
+    if state.map_fullscreen {
+        frame.render_widget(Clear, content_area);
+        let block = Block::bordered()
+            .title(" Map ")
+            .title_bottom(" Arrows pan  u/d z-level  c center  Esc/F6 close ")
+            .border_style(Style::default().fg(Color::Cyan));
+        let inner = block.inner(content_area);
+        let lines = build_map_lines(&state.sidebar.automap, inner.width, inner.height, state.map_pan);
+        frame.render_widget(block, content_area);
+        frame.render_widget(
+            Paragraph::new(lines).style(Style::default().fg(Color::White)),
+            inner,
+        );
+    }
+
     // --- Status bar ---
     // Use REVERSED on the paragraph base so the bar adapts to dark/light themes.
     // Latency values are rendered as colored badges (explicit bg + black fg +
@@ -1309,7 +1502,7 @@ pub fn draw(frame: &mut Frame, state: &mut GameState, server_name: &str, char_na
     ];
     status_spans.extend(latency_spans);
     status_spans.push(Span::raw(format!(
-        "{disc_hint}   \u{2191}\u{2193} hist   PgUp/Dn scroll   Ctrl+Y copy   Ctrl+Q disc   F2/F3:sidebars  F4:panel"
+        "{disc_hint}   \u{2191}\u{2193} hist   PgUp/Dn scroll   Ctrl+Y copy   F6 map   Ctrl+Q disc   F2/F3:sidebars  F4:panel"
     )));
     let status_line = Line::from(status_spans);
     frame.render_widget(

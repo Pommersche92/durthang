@@ -107,6 +107,8 @@ pub enum NetEvent {
     Connected,
     /// The connection was lost or refused.
     Disconnected(String),
+    /// A raw GMCP message payload (for example: `Room.Info {...}`).
+    Gmcp(String),
     /// A latency sample in milliseconds.
     Latency(u64),
 }
@@ -211,12 +213,18 @@ fn naws_packet(cols: u16, rows: u16) -> Vec<u8> {
 // Telnet stream parser
 // ---------------------------------------------------------------------------
 
+struct TelnetParseResult {
+    text: String,
+    gmcp: Vec<String>,
+}
+
 /// Parse `buf` in-place:
 /// - Strips IAC sequences and negotiates options by appending responses to
 ///   `responses`.
-/// - Returns the printable bytes as a `String` (may be shorter than `buf`).
-fn parse_telnet(buf: &[u8], responses: &mut Vec<u8>) -> String {
+/// - Returns printable text and extracted GMCP payloads.
+fn parse_telnet(buf: &[u8], responses: &mut Vec<u8>) -> TelnetParseResult {
     let mut out = Vec::with_capacity(buf.len());
+    let mut gmcp = Vec::new();
     let mut i = 0;
     while i < buf.len() {
         if buf[i] != IAC {
@@ -236,14 +244,32 @@ fn parse_telnet(buf: &[u8], responses: &mut Vec<u8>) -> String {
                 i += 1;
             }
             SB => {
-                // Sub-negotiation: skip until IAC SE
+                // Sub-negotiation: read until IAC SE.
                 i += 1;
-                while i + 1 < buf.len() {
-                    if buf[i] == IAC && buf[i + 1] == SE {
+                if i >= buf.len() {
+                    break;
+                }
+                let opt = buf[i];
+                i += 1;
+                let mut payload = Vec::new();
+                while i < buf.len() {
+                    if i + 1 < buf.len() && buf[i] == IAC && buf[i + 1] == IAC {
+                        payload.push(IAC);
+                        i += 2;
+                        continue;
+                    }
+                    if i + 1 < buf.len() && buf[i] == IAC && buf[i + 1] == SE {
                         i += 2;
                         break;
                     }
+                    payload.push(buf[i]);
                     i += 1;
+                }
+                if opt == OPT_GMCP {
+                    let msg = String::from_utf8_lossy(&payload).trim().to_string();
+                    if !msg.is_empty() {
+                        gmcp.push(msg);
+                    }
                 }
             }
             WILL | WONT | DO | DONT => {
@@ -283,7 +309,10 @@ fn parse_telnet(buf: &[u8], responses: &mut Vec<u8>) -> String {
             }
         }
     }
-    String::from_utf8_lossy(&out).into_owned()
+    TelnetParseResult {
+        text: String::from_utf8_lossy(&out).into_owned(),
+        gmcp,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -474,7 +503,11 @@ async fn connection_loop(
                     Ok(_) => {
                         let mut responses = Vec::new();
                         let raw = read_buf.split().freeze();
-                        let text = parse_telnet(&raw, &mut responses);
+                        let parsed = parse_telnet(&raw, &mut responses);
+
+                        for gmcp in parsed.gmcp {
+                            let _ = tx.send(NetEvent::Gmcp(gmcp)).await;
+                        }
 
                         // Send negotiation responses immediately.
                         if !responses.is_empty() {
@@ -484,7 +517,7 @@ async fn connection_loop(
                         }
 
                         // Split into lines; partial trailing content → Prompt.
-                        line_buf.push_str(&text);
+                        line_buf.push_str(&parsed.text);
                         let mut had_complete_lines = false;
                         while let Some(pos) = line_buf.find('\n') {
                             had_complete_lines = true;

@@ -117,8 +117,8 @@ fn default_panels() -> Vec<PanelConfig> {
     vec![
         PanelConfig { kind: PanelKind::CharSheet, side: Some(SidebarSide::Left),  height_pct: 40  },
         PanelConfig { kind: PanelKind::Paperdoll, side: Some(SidebarSide::Left),  height_pct: 60  },
-        PanelConfig { kind: PanelKind::Inventory, side: Some(SidebarSide::Right), height_pct: 100 },
-        PanelConfig { kind: PanelKind::Automap,   side: None,                     height_pct: 100 },
+        PanelConfig { kind: PanelKind::Automap,   side: Some(SidebarSide::Right), height_pct: 35  },
+        PanelConfig { kind: PanelKind::Inventory, side: Some(SidebarSide::Right), height_pct: 65  },
     ]
 }
 

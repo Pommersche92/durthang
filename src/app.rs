@@ -26,6 +26,8 @@ pub struct App {
     pub connection: Option<Connection>,
     /// Display name of the currently connected server (for the status bar).
     pub connected_server: Option<String>,
+    /// Config id of the connected server (used for map persistence).
+    pub connected_server_id: Option<String>,
     /// Display name of the currently connected character.
     pub connected_char: Option<String>,
     /// Config id of the connected character (used to look up aliases/triggers).
@@ -44,6 +46,7 @@ impl App {
             select: SelectState::new(),
             connection: None,
             connected_server: None,
+            connected_server_id: None,
             connected_char: None,
             connected_char_id: None,
             game: GameState::new(),
