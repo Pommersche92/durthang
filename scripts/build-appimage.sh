@@ -84,11 +84,11 @@ Categories=Game;Network;
 Terminal=true
 DESKTOP
 
-    # Icon — use docs/durthang.png if available, else create a placeholder with ImageMagick
-    local icon_src="${PROJECT_ROOT}/docs/durthang.png"
+    # Icon — use docs/images/durthang.png if available, else create a placeholder with ImageMagick
+    local icon_src="${PROJECT_ROOT}/docs/images/durthang.png"
     if [ -f "$icon_src" ]; then
         cp "$icon_src" "$APPDIR/usr/share/icons/hicolor/256x256/apps/${pkg}.png"
-        log_info "Using icon: docs/durthang.png"
+        log_info "Using icon: docs/images/durthang.png"
     elif command -v convert &>/dev/null; then
         log_warning "Icon not found, generating placeholder with ImageMagick"
         convert -size 256x256 xc:'#0c0a08' \

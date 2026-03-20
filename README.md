@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="docs/images/durthang-icon.png" alt="Durthang" width="128" />
+</div>
+
 # 🏰 Durthang
 
 > *"Durthang (Sauron's castle) loomed dark and tall before them."*  
@@ -35,11 +39,44 @@ statically-linked binary with no extra runtime dependencies.
 
 ## 📦 Installation
 
+| Method | Platform | Command / Link |
+|---|---|---|
+| <img src="docs/images/crates-io.png" height="16" alt=""> **[crates.io](https://crates.io/crates/durthang)** | Any (needs Rust ≥ 1.85) | `cargo install durthang` |
+| <img src="docs/images/archlinux.svg" height="16" alt=""> **[AUR](https://aur.archlinux.org/packages/durthang)** (source) | Arch Linux | `yay -S durthang` |
+| <img src="docs/images/archlinux.svg" height="16" alt=""> **[AUR](https://aur.archlinux.org/packages/durthang-bin)** (binary) | Arch Linux | `yay -S durthang-bin` |
+| <img src="docs/images/appimage.svg" height="16" alt=""> **[AppImage](https://github.com/Pommersche92/durthang/releases/latest)** | Linux x86-64 | Download `.AppImage`, `chmod +x`, run |
+| <img src="docs/images/windows.svg" height="16" alt=""> **[Windows Binary](https://github.com/Pommersche92/durthang/releases/latest)** | Windows x86-64 | Download `.zip` from GitHub Releases |
+| <img src="docs/images/github-darkmode.svg" height="16" alt=""> **From source** | Any | See below |
+
 ### From crates.io
 
 ```bash
 cargo install durthang
 ```
+
+### AUR (Arch Linux)
+
+```bash
+# Build from source
+yay -S durthang
+
+# Or install the pre-built binary
+yay -S durthang-bin
+```
+
+### AppImage (Linux)
+
+Download the latest `.AppImage` from [GitHub Releases](https://github.com/Pommersche92/durthang/releases/latest):
+
+```bash
+chmod +x durthang-*.AppImage
+./durthang-*.AppImage
+```
+
+### Windows Binary
+
+Download the `.zip` archive from [GitHub Releases](https://github.com/Pommersche92/durthang/releases/latest),
+extract it and run `durthang.exe`.
 
 ### From source
 

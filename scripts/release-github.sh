@@ -128,6 +128,21 @@ build_windows() {
         rustup target add x86_64-pc-windows-gnu
     fi
     cd "$PROJECT_ROOT"
+
+    # Generate .ico from .png so build.rs can embed it into the exe
+    if [ -f "docs/images/durthang.png" ] && [ ! -f "docs/images/durthang.ico" ]; then
+        if command -v convert &>/dev/null; then
+            log_info "Generating docs/images/durthang.ico from docs/images/durthang.png..."
+            convert docs/images/durthang.png -define icon:auto-resize=256,128,64,48,32,16 docs/images/durthang.ico
+        elif command -v magick &>/dev/null; then
+            log_info "Generating docs/images/durthang.ico from docs/images/durthang.png..."
+            magick docs/images/durthang.png -define icon:auto-resize=256,128,64,48,32,16 docs/images/durthang.ico
+        else
+            log_warning "ImageMagick not found — exe will have no custom icon"
+            log_warning "Install with: sudo apt install imagemagick"
+        fi
+    fi
+
     export RUSTUP_TOOLCHAIN=stable
     export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc
     cargo build --release --target x86_64-pc-windows-gnu

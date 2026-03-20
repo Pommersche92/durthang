@@ -44,7 +44,7 @@
     <a href="https://github.com/Pommersche92/durthang" class="btn btn-secondary">View on GitHub</a>
   </div>
 
-  <div class="scroll-hint" aria-hidden="true">&#8964;</div>
+  <button class="scroll-hint" aria-label="Scroll to content" onclick="document.getElementById('name').scrollIntoView({behavior:'smooth'})">&#8964;</button>
 </header>
 
 <hr class="section-divider" />
@@ -178,19 +178,71 @@
   <p class="section-eyebrow">Getting Started</p>
   <h2>Installation</h2>
 
-  <h3>From crates.io</h3>
-  <div class="terminal">
-    <span class="prompt">$ </span><span class="cmd">cargo install durthang</span>
-  </div>
+  <div class="install-grid">
 
-  <h3>From source</h3>
-  <div class="terminal">
-    <span class="prompt">$ </span><span class="cmd">git clone https://github.com/Pommersche92/durthang.git</span><br />
-    <span class="prompt">$ </span><span class="cmd">cd durthang &amp;&amp; cargo build --release</span><br />
-    <span class="comment"># binary: target/release/durthang</span>
-  </div>
+    <div class="install-card">
+      <div class="install-card-header">
+        <span class="install-icon"><img src="images/crates-io.png" alt="crates.io" /></span>
+        <h3><a href="https://crates.io/crates/durthang" target="_blank" rel="noopener">crates.io</a></h3>
+      </div>
+      <p>Any platform — requires a local <a href="https://rustup.rs" target="_blank" rel="noopener">Rust toolchain</a> (≥ 1.85).</p>
+      <div class="terminal">
+        <span class="prompt">$ </span><span class="cmd">cargo install durthang</span>
+      </div>
+    </div>
 
-  <p>Minimum Rust version: <strong>1.85</strong> (edition 2024).</p>
+    <div class="install-card">
+      <div class="install-card-header">
+        <span class="install-icon"><img src="images/archlinux.svg" alt="Arch Linux" /></span>
+        <h3><a href="https://aur.archlinux.org/packages/durthang" target="_blank" rel="noopener">AUR</a> (Arch Linux)</h3>
+      </div>
+      <p>Build from source via the Arch User Repository. Also available as a pre-built binary (<a href="https://aur.archlinux.org/packages/durthang-bin" target="_blank" rel="noopener">durthang-bin</a>).</p>
+      <div class="terminal">
+        <span class="comment"># build from source</span><br />
+        <span class="prompt">$ </span><span class="cmd">yay -S durthang</span><br />
+        <span class="comment"># or pre-built binary</span><br />
+        <span class="prompt">$ </span><span class="cmd">yay -S durthang-bin</span>
+      </div>
+    </div>
+
+    <div class="install-card">
+      <div class="install-card-header">
+        <span class="install-icon"><img src="images/appimage.svg" alt="AppImage" /></span>
+        <h3><a href="https://github.com/Pommersche92/durthang/releases/latest" target="_blank" rel="noopener">AppImage</a> (Linux)</h3>
+      </div>
+      <p>Self-contained portable binary — no installation, no root. Download from the latest GitHub release.</p>
+      <div class="terminal">
+        <span class="prompt">$ </span><span class="cmd">chmod +x durthang-*.AppImage</span><br />
+        <span class="prompt">$ </span><span class="cmd">./durthang-*.AppImage</span>
+      </div>
+    </div>
+
+    <div class="install-card">
+      <div class="install-card-header">
+        <span class="install-icon"><img src="images/windows.svg" alt="Windows" /></span>
+        <h3><a href="https://github.com/Pommersche92/durthang/releases/latest" target="_blank" rel="noopener">Windows Binary</a></h3>
+      </div>
+      <p>Pre-compiled x86-64 executable — download the <code>.zip</code> from the latest GitHub release and extract.</p>
+      <div class="terminal">
+        <span class="comment"># Run from extracted folder</span><br />
+        <span class="prompt">&gt; </span><span class="cmd">durthang.exe</span>
+      </div>
+    </div>
+
+    <div class="install-card">
+      <div class="install-card-header">
+        <span class="install-icon"><img src="images/github-darkmode.svg" alt="GitHub" /></span>
+        <h3>From source</h3>
+      </div>
+      <p>Clone and build with Cargo. Minimum Rust version: <strong>1.85</strong> (edition 2024).</p>
+      <div class="terminal">
+        <span class="prompt">$ </span><span class="cmd">git clone https://github.com/Pommersche92/durthang.git</span><br />
+        <span class="prompt">$ </span><span class="cmd">cd durthang &amp;&amp; cargo build --release</span><br />
+        <span class="comment"># binary: target/release/durthang</span>
+      </div>
+    </div>
+
+  </div><!-- /.install-grid -->
 
   <h3 style="margin-top:2rem">Linux: Secret Service dependency</h3>
   <p>
@@ -248,7 +300,7 @@
       <span class="feature-icon">&#9993;</span>
       <h3>Entwickler</h3>
       <p>
-        Informationen zum Entwickler, seiner weiteren Projekte und Inhalte sind auf der persönlichen Homepage des Autorszu finden.
+        Informationen zum Entwickler, seiner weiteren Projekte und Inhalte sind auf der persönlichen Homepage des Autors zu finden.
       </p>
       <a href="https://geisel-web.de" class="btn btn-secondary"
          target="_blank" rel="noopener noreferrer">geisel-web.de &#8599;</a>
