@@ -529,7 +529,7 @@ p:last-child { margin-bottom: 0; }
   margin: 2rem 0;
 }
 .lore-card::before {
-  content: '᚛᚜';
+  /*content: '᚛᚜';*/
   position: absolute;
   top: -1.1rem;
   left: 50%;

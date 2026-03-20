@@ -293,7 +293,75 @@ cargo test
 
 ---
 
-## 📜 License
+## � Releasing
+
+All release automation lives in `scripts/`.
+
+### Prerequisites
+
+| Tool | Purpose | Install |
+|---|---|---|
+| `gh` | GitHub CLI — creates releases and uploads assets | [cli.github.com](https://cli.github.com/) → `gh auth login` |
+| `cross` | Docker-based cross-compiler (preferred) | `cargo install cross` |
+| `rustup` targets | Needed if **not** using `cross` | `rustup target add x86_64-unknown-linux-musl x86_64-pc-windows-gnu` |
+| `zip` | Windows zip packaging | `sudo pacman -S zip` / `sudo apt install zip` |
+| `appimagetool` | Builds the Linux AppImage | [AppImageKit releases](https://github.com/AppImage/AppImageKit/releases) |
+| `makepkg` | Generates `.SRCINFO` for AUR | Arch Linux or an Arch-based Docker container |
+| AUR SSH key | Authenticates pushes to AUR | Add public key at [aur.archlinux.org/account](https://aur.archlinux.org/account/) |
+
+**Recommended SSH config** for AUR (`~/.ssh/config`):
+
+```
+Host aur.archlinux.org
+    IdentityFile ~/.ssh/id_ed25519_aur
+    User aur
+```
+
+**Optional — AppImage icon:**  
+Place a `docs/durthang.png` (512 × 512 px) in the repo root. If absent, a
+placeholder is generated via ImageMagick (`convert`).
+
+### Running a release
+
+```bash
+# Full release: GitHub + AppImage + Windows zip + AUR
+bash scripts/release.sh
+
+# Skip individual steps
+bash scripts/release.sh --skip-appimage   # no AppImage
+bash scripts/release.sh --skip-windows    # no Windows build
+bash scripts/release.sh --skip-aur        # no AUR push
+```
+
+The script automatically reads the version from `Cargo.toml`, so bump it there
+(and in the `CHANGELOG` / `git tag`) before running.
+
+All build artefacts land in `dist/` (git-ignored):
+
+```
+dist/
+  durthang-<ver>-x86_64-linux.tar.gz      ← used by AUR and GitHub release
+  durthang-<ver>-x86_64-linux.AppImage
+  durthang-<ver>-x86_64-windows.zip
+  durthang-<ver>-sha256sums.txt
+```
+
+### AUR-only update
+
+If you only need to bump the AUR package without creating a full GitHub release:
+
+```bash
+bash scripts/aur/update-aur.sh <VERSION> dist/durthang-<VERSION>-x86_64-linux.tar.gz
+```
+
+The script clones `ssh://aur@aur.archlinux.org/durthang-bin.git`, writes a
+`PKGBUILD` with the correct `pkgver` and `sha256sums`, regenerates `.SRCINFO`,
+and pushes. **First-time setup:** create the `durthang-bin` package via the
+[AUR web interface](https://aur.archlinux.org/packages/) before the first push.
+
+---
+
+## �📜 License
 
 GNU General Public License v3.0 — see [LICENSE](LICENSE) for the full text.
 
