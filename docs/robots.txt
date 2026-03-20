@@ -1,0 +1,17 @@
+# Robots.txt für durthang.app
+User-agent: *
+Allow: /
+
+# Blockiere sensible Bereiche (falls vorhanden)
+Disallow: /assets/
+Disallow: /fonts/
+Disallow: /images/
+Disallow: /CNAME
+Disallow: /*.json$
+
+# Sitemap-Verweis
+Sitemap: https://durthang.app/sitemap.xml
+
+# Crawl-Delay für weniger aggressive Crawler
+User-agent: *
+Crawl-delay: 1
