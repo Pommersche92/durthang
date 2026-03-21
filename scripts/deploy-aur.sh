@@ -161,20 +161,44 @@ push_to_aur() {
 
     cd "$aur_repo"
 
-    if git diff --quiet; then
+    # Check if there are any changes (including untracked files)
+    local has_changes=false
+    if [ -n "$(git status --porcelain)" ]; then
+        has_changes=true
+        log_step "Committing changes for $pkgname..."
+        git add PKGBUILD .SRCINFO
+        git commit -m "Update to version $version"
+    fi
+
+    # Check if there are unpushed commits
+    local unpushed_commits=0
+    if git rev-parse --abbrev-ref @{upstream} &>/dev/null; then
+        unpushed_commits=$(git rev-list @{upstream}..HEAD 2>/dev/null | wc -l)
+    else
+        # No upstream set, check if we have any commits
+        if [ -n "$(git log --oneline 2>/dev/null)" ]; then
+            unpushed_commits=1
+        fi
+    fi
+
+    if [ "$has_changes" = false ] && [ "$unpushed_commits" -eq 0 ]; then
         log_info "No changes to push for $pkgname"
         return 0
     fi
 
-    log_step "Pushing $pkgname to AUR..."
-    git add PKGBUILD .SRCINFO
-    git commit -m "Update to version $version"
-
     if [ "$PUSH" = true ]; then
-        git push
-        log_success "Pushed $pkgname v$version to AUR"
+        log_step "Pushing $pkgname to AUR..."
+        # Use push with upstream for initial commit
+        if git push -u origin master 2>&1; then
+            log_success "Pushed $pkgname v$version to AUR"
+        elif git push -u origin main 2>&1; then
+            log_success "Pushed $pkgname v$version to AUR"
+        else
+            log_error "Failed to push $pkgname"
+            return 1
+        fi
     else
-        log_warning "Dry-run: commit made but not pushed (pass --push to push)"
+        log_warning "Dry-run: changes ready but not pushed (pass --push to push)"
         git log --oneline -1
     fi
 }
