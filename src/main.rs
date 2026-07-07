@@ -344,6 +344,7 @@ fn drain_net_events(app: &mut App) {
             }
             Ok(NetEvent::Gmcp(msg)) => {
                 app.game.sidebar.map_apply_gmcp(&msg);
+                app.game.sidebar.widget_apply_gmcp(&msg);
             }
             Ok(NetEvent::Disconnected(reason)) => {
                 tracing::warn!("Disconnected: {reason}");

@@ -163,6 +163,8 @@ height_pct = 100
         right_width: 26,
         panels: vec![pc],
         notes: vec![],
+        widgets: vec![],
+        left_width: 20,
     };
     let state = SidebarState::new(layout);
     let automap = state.layout.panels.iter().find(|p| p.kind == PanelKind::Automap)
@@ -184,6 +186,8 @@ fn legacy_panels_are_removed_and_defaults_inserted() {
             PanelConfig { kind: PanelKind::Inventory,  side: Some(SidebarSide::Right), height_pct: 30 },
         ],
         notes: vec![],
+        widgets: vec![],
+        left_width: 20,
     };
     let state = SidebarState::new(layout);
     assert!(!state.layout.panels.iter().any(|p| {
@@ -206,6 +210,8 @@ fn migrate_layout_puts_automap_before_notes() {
             PanelConfig { kind: PanelKind::Automap, side: Some(SidebarSide::Right), height_pct: 35 },
         ],
         notes: vec![],
+        widgets: vec![],
+        left_width: 20,
     };
     let state = SidebarState::new(layout);
     let ai = state.layout.panels.iter().position(|p| p.kind == PanelKind::Automap).unwrap();
@@ -231,4 +237,52 @@ fn trigger_ids_are_unique() {
     let a = Trigger::new("pat");
     let b = Trigger::new("pat");
     assert_ne!(a.id, b.id);
+}
+
+// ---------------------------------------------------------------------------
+// Widget serialization
+// ---------------------------------------------------------------------------
+
+#[test]
+fn widget_config_serializes_to_toml() {
+    use crate::config::WidgetConfig;
+    use crate::config::WidgetKind;
+
+    let widget = WidgetConfig {
+        kind: WidgetKind::Gauge,
+        label: "HP".to_string(),
+        side: Some(SidebarSide::Left),
+        height_pct: 50,
+        value_gmcp: Some("char.vitals.hp".to_string()),
+        max_gmcp: Some("char.vitals.maxhp".to_string()),
+        color: Some("Red".to_string()),
+        keys: vec![],
+    };
+
+    let toml = toml::to_string(&widget).expect("serialise failed");
+    assert!(toml.contains("kind = \"gauge\""));
+    assert!(toml.contains("label = \"HP\""));
+    assert!(toml.contains("side = \"left\""));
+    assert!(toml.contains("value_gmcp = \"char.vitals.hp\""));
+    assert!(toml.contains("max_gmcp = \"char.vitals.maxhp\""));
+    assert!(toml.contains("color = \"Red\""));
+}
+
+#[test]
+fn widget_config_deserializes_from_toml() {
+    use crate::config::WidgetConfig;
+    use crate::config::WidgetKind;
+
+    let toml = r#"
+kind = "kv_list"
+label = "Stats"
+side = "left"
+height_pct = 50
+keys = ["char.stats.str", "char.stats.dex", "char.stats.int"]
+"#;
+    let widget: WidgetConfig = toml::from_str(toml).expect("deserialise failed");
+    assert_eq!(widget.kind, WidgetKind::KvList);
+    assert_eq!(widget.label, "Stats");
+    assert_eq!(widget.side, Some(SidebarSide::Left));
+    assert_eq!(widget.keys.len(), 3);
 }

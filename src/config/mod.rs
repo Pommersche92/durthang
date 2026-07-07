@@ -170,6 +170,62 @@ fn default_panels() -> Vec<PanelConfig> {
     ]
 }
 
+/// Widget types for the sidebar.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WidgetKind {
+    /// A progress bar showing a value against a maximum.
+    Gauge,
+    /// A simple key-value list.
+    KvList,
+    /// A grid/table display.
+    Grid,
+}
+
+impl WidgetKind {
+    /// Short label used in the sidebar tab bar.
+    #[allow(dead_code)]
+    pub fn short_label(&self) -> &'static str {
+        match self {
+            WidgetKind::Gauge => "Gauge",
+            WidgetKind::KvList => "KV",
+            WidgetKind::Grid => "Grid",
+        }
+    }
+}
+
+/// Configuration for a single widget.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WidgetConfig {
+    /// Widget type.
+    pub kind: WidgetKind,
+    /// Display label for the widget.
+    pub label: String,
+    /// Which sidebar column. `None` = not displayed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side: Option<SidebarSide>,
+    /// Relative height expressed as a percentage (1–100).
+    #[serde(default = "default_widget_height_pct")]
+    pub height_pct: u8,
+    /// For gauge: GMCP path to the current value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value_gmcp: Option<String>,
+    /// For gauge: GMCP path to the maximum value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_gmcp: Option<String>,
+    /// For gauge/kkv_list/grid: color name (e.g., "Red", "Green").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// For kv_list/grid: list of GMCP paths to display.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<String>,
+}
+
+/// Default relative height for a widget.
+fn default_widget_height_pct() -> u8 {
+    50
+}
+
 /// Per-character sidebar layout persisted in the config file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SidebarLayout {
@@ -185,6 +241,17 @@ pub struct SidebarLayout {
     /// User-created notes shown in the Notes panel.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
+    /// Widget configurations for custom GMCP displays.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub widgets: Vec<WidgetConfig>,
+    /// Default width in terminal characters of the left sidebar column.
+    #[serde(default = "default_left_width")]
+    pub left_width: u16,
+}
+
+/// Default width in terminal characters of the left sidebar column.
+fn default_left_width() -> u16 {
+    20
 }
 
 impl Default for SidebarLayout {
@@ -194,6 +261,8 @@ impl Default for SidebarLayout {
             right_width: 26,
             panels: default_panels(),
             notes: Vec::new(),
+            widgets: Vec::new(),
+            left_width: 20,
         }
     }
 }

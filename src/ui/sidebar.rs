@@ -25,8 +25,9 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
 
-use crate::config::{PanelConfig, PanelKind, SidebarLayout, SidebarSide};
+use crate::config::{PanelConfig, PanelKind, SidebarLayout, SidebarSide, WidgetConfig};
 use crate::map::{Direction, WorldMap};
+use crate::ui::widgets::{draw_widget, WidgetDataStore};
 
 // ---------------------------------------------------------------------------
 // Key result
@@ -52,11 +53,16 @@ pub struct SidebarState {
     pub layout: SidebarLayout,
     /// Which panel currently has keyboard focus.  `None` → game has focus.
     pub focused_panel: Option<PanelKind>,
+    /// Which widget currently has focus (index into layout.widgets).
+    pub focused_widget: Option<usize>,
     /// Whether the options overlay is open.
     pub options_open: bool,
 
     /// Automap world state.
     pub automap: WorldMap,
+
+    /// GMCP data store for widgets.
+    pub widget_data: WidgetDataStore,
 
     // --- Interaction state ---
     /// Cursor row within the focused panel list.
@@ -90,8 +96,10 @@ impl SidebarState {
         Self {
             layout,
             focused_panel: None,
+            focused_widget: None,
             options_open: false,
             automap: WorldMap::default(),
+            widget_data: WidgetDataStore::new(),
             panel_cursor: 0,
             options_cursor: 0,
             notes_editing: false,
@@ -107,6 +115,25 @@ impl SidebarState {
             .panels
             .iter()
             .any(|p| p.side.as_ref() == Some(side))
+    }
+
+    /// Returns `true` if any widget is assigned to the given sidebar side.
+    pub fn has_side_widgets(&self, side: &SidebarSide) -> bool {
+        self.layout
+            .widgets
+            .iter()
+            .any(|w| w.side.as_ref() == Some(side))
+    }
+
+    /// Returns `true` if any panel or widget is assigned to the given sidebar side.
+    #[allow(dead_code)]
+    pub fn has_side_content(&self, side: &SidebarSide) -> bool {
+        self.has_side_panels(side) || self.has_side_widgets(side)
+    }
+
+    /// Apply a GMCP message to the widget data store.
+    pub fn widget_apply_gmcp(&mut self, msg: &str) {
+        self.widget_data.apply_gmcp(msg);
     }
 
     /// Toggles right sidebar visibility (no-op when no panels are assigned).
@@ -163,6 +190,38 @@ impl SidebarState {
         };
         self.focused_panel = next;
         self.panel_cursor = 0;
+    }
+
+    /// Cycles keyboard focus to the next visible left-sidebar widget.
+    pub fn focus_next_widget(&mut self) {
+        let visible: Vec<usize> = self
+            .layout
+            .widgets
+            .iter()
+            .enumerate()
+            .filter(|(_, w)| w.side == Some(SidebarSide::Left))
+            .map(|(i, _)| i)
+            .collect();
+
+        if visible.is_empty() {
+            self.focused_widget = None;
+            return;
+        }
+
+        let next = match self.focused_widget {
+            None => visible.into_iter().next(),
+            Some(cur) => {
+                let pos = visible.iter().position(|&i| i == cur);
+                match pos {
+                    None => visible.into_iter().next(),
+                    Some(i) => {
+                        let next_i = (i + 1) % visible.len();
+                        visible.into_iter().nth(next_i)
+                    }
+                }
+            }
+        };
+        self.focused_widget = next;
     }
 
     // ------------------------------------------------------------------
@@ -591,9 +650,10 @@ pub fn draw(
     }
 }
 
-/// Render all panels assigned to `side` stacked vertically inside `area`.
-/// Heights are allocated proportionally to each panel's `height_pct`.
+/// Render all panels and widgets assigned to `side` stacked vertically inside `area`.
+/// Heights are allocated proportionally to each item's `height_pct`.
 fn draw_sidebar_col(frame: &mut Frame, state: &SidebarState, area: Rect, side: &SidebarSide) {
+    // Get panels for this side
     let panels: Vec<&PanelConfig> = state
         .layout
         .panels
@@ -601,38 +661,45 @@ fn draw_sidebar_col(frame: &mut Frame, state: &SidebarState, area: Rect, side: &
         .filter(|p| p.side.as_ref() == Some(side))
         .collect();
 
-    if panels.is_empty() || area.height < 2 {
+    // Get widgets for this side
+    let widgets: Vec<&WidgetConfig> = state
+        .layout
+        .widgets
+        .iter()
+        .filter(|w| w.side.as_ref() == Some(side))
+        .collect();
+
+    if panels.is_empty() && widgets.is_empty() {
         return;
     }
 
     let avail_h = area.height;
-
-    // Automap always gets a square allocation (height = column width).
-    // All other panels share the remaining height proportionally by height_pct.
-    let automap_h: u16 = if panels.iter().any(|p| p.kind == PanelKind::Automap) {
-        (area.width / 2).min(avail_h)
-    } else {
-        0
-    };
-    let others_h: u16 = avail_h.saturating_sub(automap_h);
-    let others_pct: u32 = panels
-        .iter()
-        .filter(|p| p.kind != PanelKind::Automap)
-        .map(|p| p.height_pct as u32)
-        .sum::<u32>()
-        .max(1);
-
     let mut y = area.y;
 
+    // Render panels first
     for (i, pc) in panels.iter().enumerate() {
-        let is_last = i == panels.len() - 1;
+        let is_last = i == panels.len() - 1 && widgets.is_empty();
         let panel_h: u16 = if pc.kind == PanelKind::Automap {
-            automap_h
+            (area.width / 2).min(avail_h)
         } else if is_last {
             (area.y + avail_h).saturating_sub(y)
         } else {
+            // Calculate proportional height for non-automap panels
+            let others_pct: u32 = panels
+                .iter()
+                .filter(|p| p.kind != PanelKind::Automap)
+                .map(|p| p.height_pct as u32)
+                .sum::<u32>()
+                .max(1);
+            let automap_h: u16 = if panels.iter().any(|p| p.kind == PanelKind::Automap) {
+                (area.width / 2).min(avail_h)
+            } else {
+                0
+            };
+            let others_h: u16 = avail_h.saturating_sub(automap_h);
             ((others_h as u32 * pc.height_pct as u32) / others_pct) as u16
         };
+
         if panel_h == 0 {
             continue;
         }
@@ -650,6 +717,38 @@ fn draw_sidebar_col(frame: &mut Frame, state: &SidebarState, area: Rect, side: &
 
         let focused = state.focused_panel.as_ref() == Some(&pc.kind);
         draw_panel(frame, state, &pc.kind, panel_area, focused);
+    }
+
+    // Render widgets
+    for (i, wc) in widgets.iter().enumerate() {
+        let is_last = i == widgets.len() - 1;
+        let widget_h: u16 = if is_last {
+            (area.y + avail_h).saturating_sub(y)
+        } else {
+            // Calculate proportional height for widgets
+            let total_pct: u32 = widgets.iter().map(|w| w.height_pct as u32).sum::<u32>().max(1);
+            ((avail_h as u32 * wc.height_pct as u32) / total_pct) as u16
+        };
+
+        if widget_h == 0 {
+            continue;
+        }
+        if y + widget_h > area.y + avail_h {
+            break;
+        }
+
+        let widget_area = Rect {
+            x: area.x,
+            y,
+            width: area.width,
+            height: widget_h,
+        };
+        y += widget_h;
+
+        // Get the index of this widget in the full widgets list
+        let widget_idx = state.layout.widgets.iter().position(|w| w.label == wc.label).unwrap_or(i);
+        let focused = state.focused_widget == Some(widget_idx);
+        draw_widget(frame, wc, &state.widget_data, widget_area, focused);
     }
 }
 

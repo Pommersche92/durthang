@@ -172,8 +172,10 @@ Once connected, the game screen shows:
 | `↑` / `↓` | Input history |
 | `PgUp` / `PgDn` | Scroll the output buffer |
 | `Ctrl+End` | Jump back to the live view |
+| `F2` | Toggle focus on left sidebar widgets |
 | `F3` | Toggle the right sidebar |
-| `F4` | Cycle focus to the next sidebar panel |
+| `F4` | Cycle focus to the next right ssidebar panel |
+| `F5` | Cycle focus to the next left sidebar widget |
 | `F1` / `Esc` (in sidebar) | Return focus to the game input |
 | `Ctrl+C` | Enter copy mode (scroll + copy a line) |
 | `Ctrl+Q` | Disconnect and return to the selection screen |
@@ -225,6 +227,70 @@ A personal scratchpad attached to each character.
 | `Esc` | Cancel editing |
 
 Notes are persisted in the character's sidebar config automatically on every change.
+
+### 🧩 Custom Widgets (Left Sidebar)
+
+The **left sidebar** can display custom widgets that show GMCP data. Widgets are defined
+in the character config under `[[sidebar.widgets]]`. The left sidebar appears automatically
+when you add widgets to it.
+
+#### Widget Types
+
+| Type | Description |
+|---|---|
+| `gauge` | A progress bar showing a value against a maximum (e.g., HP/MP) |
+| `kv_list` | A simple key-value list displaying multiple GMCP values |
+| `grid` | A table/grid display for structured data |
+
+#### Gauge Widget
+
+Display a progress bar with a value and maximum from GMCP:
+
+```toml
+[[characters.sidebar.widgets]]
+kind         = "gauge"
+label        = "HP"
+side         = "left"
+height_pct   = 20
+value_gmcp   = "char.vitals.hp"
+max_gmcp     = "char.vitals.maxhp"
+color        = "Red"
+```
+
+#### Key-Value List Widget
+
+Display multiple GMCP values as a list:
+
+```toml
+[[characters.sidebar.widgets]]
+kind         = "kv_list"
+label        = "Stats"
+side         = "left"
+height_pct   = 30
+keys         = ["char.stats.str", "char.stats.dex", "char.stats.int", "char.stats.con"]
+```
+
+#### Grid Widget
+
+Display data in a table format (keys are grouped by their first path component):
+
+```toml
+[[characters.sidebar.widgets]]
+kind         = "grid"
+label        = "Inventory"
+side         = "left"
+height_pct   = 50
+keys         = ["item.sword", "item.shield", "item.potion"]
+```
+
+#### Widget Key Bindings
+
+| Key | Action |
+|---|---|
+| `F2` | Toggle focus on the left sidebar (focus first widget or clear focus) |
+| `F5` | Cycle focus to the next left sidebar widget |
+
+When a widget is focused, it displays a yellow border to indicate focus.
 
 ---
 

@@ -36,6 +36,8 @@ fn new_with_empty_layout_inserts_both_panels() {
         right_width: 26,
         panels: vec![],
         notes: vec![],
+        widgets: vec![],
+        left_width: 20,
     };
     let state = SidebarState::new(layout);
     assert!(state.layout.panels.iter().any(|p| p.kind == PanelKind::Automap));
@@ -51,6 +53,8 @@ fn new_with_automap_side_none_assigns_right() {
             PanelConfig { kind: PanelKind::Automap, side: None, height_pct: 100 },
         ],
         notes: vec![],
+        widgets: vec![],
+        left_width: 20,
     };
     let state = SidebarState::new(layout);
     let p = state.layout.panels.iter().find(|p| p.kind == PanelKind::Automap).unwrap();
@@ -66,6 +70,8 @@ fn new_with_notes_side_none_assigns_right() {
             PanelConfig { kind: PanelKind::Notes, side: None, height_pct: 100 },
         ],
         notes: vec![],
+        widgets: vec![],
+        left_width: 20,
     };
     let state = SidebarState::new(layout);
     let p = state.layout.panels.iter().find(|p| p.kind == PanelKind::Notes).unwrap();
@@ -105,6 +111,8 @@ fn has_side_panels_returns_false_after_all_panels_hidden() {
             PanelConfig { kind: PanelKind::Notes,   side: None, height_pct: 50 },
         ],
         notes: vec![],
+        widgets: vec![],
+        left_width: 20,
     };
     // Skip migration by building state directly. For this test we bypass
     // SidebarState::new to avoid migrate_layout re-assigning sides.
@@ -379,4 +387,105 @@ fn notes_editor_char_input_inserts_at_cursor() {
     handle_sidebar_key(&mut state, key(KeyCode::Left));
     handle_sidebar_key(&mut state, key(KeyCode::Char('b')));
     assert_eq!(state.notes_edit_buf, "abc");
+}
+
+// ---------------------------------------------------------------------------
+// Widget system tests
+// ---------------------------------------------------------------------------
+
+use crate::config::{WidgetConfig, WidgetKind};
+use crate::ui::widgets::WidgetDataStore;
+
+#[test]
+fn widget_data_store_parses_gmcp_message() {
+    let mut store = WidgetDataStore::new();
+    store.apply_gmcp("Char.Vitals {\"hp\": 100, \"maxhp\": 150}");
+    assert_eq!(store.get("Char.Vitals.hp"), Some("100"));
+    assert_eq!(store.get("Char.Vitals.maxhp"), Some("150"));
+}
+
+#[test]
+fn widget_data_store_handles_nested_json() {
+    let mut store = WidgetDataStore::new();
+    store.apply_gmcp("Char.Stats {\"str\": 15, \"dex\": 12, \"int\": 10}");
+    assert_eq!(store.get("Char.Stats.str"), Some("15"));
+    assert_eq!(store.get("Char.Stats.dex"), Some("12"));
+    assert_eq!(store.get("Char.Stats.int"), Some("10"));
+}
+
+#[test]
+fn widget_data_store_handles_array() {
+    let mut store = WidgetDataStore::new();
+    store.apply_gmcp("Char.Inventory {\"items\": [\"sword\", \"shield\"]}");
+    assert_eq!(store.get("Char.Inventory.items.0"), Some("sword"));
+    assert_eq!(store.get("Char.Inventory.items.1"), Some("shield"));
+}
+
+#[test]
+fn widget_data_store_ignores_invalid_json() {
+    let mut store = WidgetDataStore::new();
+    store.apply_gmcp("Char.Vitals {invalid json}");
+    // Should not crash, data should remain empty
+    assert!(store.get("Char.Vitals.hp").is_none());
+}
+
+#[test]
+fn has_side_widgets_returns_true_for_left() {
+    let mut state = default_state();
+    state.layout.widgets.push(WidgetConfig {
+        kind: WidgetKind::Gauge,
+        label: "HP".to_string(),
+        side: Some(SidebarSide::Left),
+        height_pct: 50,
+        value_gmcp: Some("Char.Vitals.hp".to_string()),
+        max_gmcp: Some("Char.Vitals.maxhp".to_string()),
+        color: None,
+        keys: vec![],
+    });
+    assert!(state.has_side_widgets(&SidebarSide::Left));
+    assert!(!state.has_side_widgets(&SidebarSide::Right));
+}
+
+#[test]
+fn focus_next_widget_cycles_through_left_widgets() {
+    let mut state = default_state();
+    state.layout.widgets.push(WidgetConfig {
+        kind: WidgetKind::Gauge,
+        label: "HP".to_string(),
+        side: Some(SidebarSide::Left),
+        height_pct: 50,
+        value_gmcp: Some("Char.Vitals.hp".to_string()),
+        max_gmcp: Some("Char.Vitals.maxhp".to_string()),
+        color: None,
+        keys: vec![],
+    });
+    state.layout.widgets.push(WidgetConfig {
+        kind: WidgetKind::KvList,
+        label: "Stats".to_string(),
+        side: Some(SidebarSide::Left),
+        height_pct: 50,
+        value_gmcp: None,
+        max_gmcp: None,
+        color: None,
+        keys: vec!["Char.Stats.str".to_string()],
+    });
+
+    // First call should focus first widget
+    state.focus_next_widget();
+    assert_eq!(state.focused_widget, Some(0));
+
+    // Second call should focus second widget
+    state.focus_next_widget();
+    assert_eq!(state.focused_widget, Some(1));
+
+    // Third call should wrap back to first
+    state.focus_next_widget();
+    assert_eq!(state.focused_widget, Some(0));
+}
+
+#[test]
+fn focus_next_widget_none_when_no_left_widgets() {
+    let mut state = default_state();
+    state.focus_next_widget();
+    assert!(state.focused_widget.is_none());
 }

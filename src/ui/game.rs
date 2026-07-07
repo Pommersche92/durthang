@@ -917,12 +917,26 @@ pub fn handle_key(state: &mut GameState, key: KeyEvent) -> Option<GameAction> {
     // F1 — return keyboard focus to the game input.
     if key.code == KeyCode::F(1) {
         state.sidebar.focused_panel = None;
+        state.sidebar.focused_widget = None;
         return None;
     }
 
     // F-key sidebar controls.
     if let KeyCode::F(n) = key.code {
         match n {
+            2 => {
+                // F2: toggle left sidebar (widgets)
+                if state.sidebar.has_side_widgets(&SidebarSide::Left) {
+                    // Left sidebar is always visible when it has widgets
+                    // Focus the first widget if none focused, otherwise clear focus
+                    if state.sidebar.focused_widget.is_none() {
+                        state.sidebar.focus_next_widget();
+                    } else {
+                        state.sidebar.focused_widget = None;
+                    }
+                }
+                return None;
+            }
             3 => {
                 if state.sidebar.toggle_right() {
                     return Some(GameAction::SaveSidebarLayout);
@@ -931,6 +945,13 @@ pub fn handle_key(state: &mut GameState, key: KeyEvent) -> Option<GameAction> {
             }
             4 => {
                 state.sidebar.focus_next_panel();
+                return None;
+            }
+            5 => {
+                // F5: cycle focus to next left sidebar widget
+                if state.sidebar.has_side_widgets(&SidebarSide::Left) {
+                    state.sidebar.focus_next_widget();
+                }
                 return None;
             }
             _ => return None,
@@ -1304,7 +1325,19 @@ pub fn draw(frame: &mut Frame, state: &mut GameState, server_name: &str, char_na
     let [content_area, status_area] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
 
-    // Horizontal split: game column | optional right sidebar.
+    // Check for left sidebar (widgets only)
+    let has_left = state.sidebar.has_side_widgets(&SidebarSide::Left);
+    let left_w = if has_left {
+        state
+            .sidebar
+            .layout
+            .left_width
+            .min(content_area.width.saturating_sub(20))
+    } else {
+        0
+    };
+
+    // Check for right sidebar (panels)
     let has_right = state.sidebar.has_side_panels(&SidebarSide::Right);
     let show_right = has_right && state.sidebar.layout.right_visible;
 
@@ -1319,12 +1352,25 @@ pub fn draw(frame: &mut Frame, state: &mut GameState, server_name: &str, char_na
         0
     };
 
-    let (game_col, right_area_opt) = if right_w > 0 {
+    // Horizontal split: left sidebar | game column | right sidebar
+    let (left_area_opt, game_col, right_area_opt) = if left_w > 0 && right_w > 0 {
+        let c = Layout::horizontal([
+            Constraint::Length(left_w),
+            Constraint::Fill(1),
+            Constraint::Length(right_w),
+        ])
+        .split(content_area);
+        (Some(c[0]), c[1], Some(c[2]))
+    } else if left_w > 0 {
+        let c = Layout::horizontal([Constraint::Length(left_w), Constraint::Fill(1)])
+            .split(content_area);
+        (Some(c[0]), c[1], None)
+    } else if right_w > 0 {
         let c = Layout::horizontal([Constraint::Fill(1), Constraint::Length(right_w)])
             .split(content_area);
-        (c[0], Some(c[1]))
+        (None, c[0], Some(c[1]))
     } else {
-        (content_area, None)
+        (None, content_area, None)
     };
 
     // Game column: [output area | input block (3 rows: border + content + border)]
@@ -1438,7 +1484,7 @@ pub fn draw(frame: &mut Frame, state: &mut GameState, server_name: &str, char_na
     );
 
     // --- Sidebars ---
-    sidebar::draw(frame, &state.sidebar, area, None, right_area_opt);
+    sidebar::draw(frame, &state.sidebar, area, left_area_opt, right_area_opt);
 
     if state.map_fullscreen {
         frame.render_widget(Clear, content_area);
