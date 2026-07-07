@@ -62,6 +62,8 @@ pub enum GameAction {
     RemoveTrigger(String),
     /// The sidebar layout was changed and should be persisted to the character config.
     SaveSidebarLayout,
+    /// Show stored credentials for the connected character.
+    ShowCredentials,
 }
 
 // ---------------------------------------------------------------------------
@@ -671,13 +673,15 @@ impl GameState {
                 }
             }
 
-            _ => {
-                self.push_system(&format!("Unknown command: {input}"));
-                self.push_system(
-                    "  Available: /alias, /unalias, /trigger, /sidebar, /map, /disconnect, /quit",
-                );
-                None
-            }
+             "credentials" | "cred" => Some(GameAction::ShowCredentials),
+
+             _ => {
+                 self.push_system(&format!("Unknown command: {input}"));
+                 self.push_system(
+                     "  Available: /alias, /unalias, /trigger, /sidebar, /map, /credentials, /disconnect, /quit",
+                 );
+                 None
+             }
         }
     }
 } // end impl GameState

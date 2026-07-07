@@ -285,11 +285,14 @@ async fn run_loop(app: &mut App, terminal: &mut Terminal<CrosstermBackend<io::St
                             Some(GameAction::RemoveTrigger(id_prefix)) => {
                                 game_remove_trigger(app, id_prefix);
                             }
-                            Some(GameAction::SaveSidebarLayout) => {
-                                save_sidebar_layout(app);
-                            }
-                            None => {}
-                        }
+                             Some(GameAction::SaveSidebarLayout) => {
+                                 save_sidebar_layout(app);
+                             }
+                             Some(GameAction::ShowCredentials) => {
+                                 game_show_credentials(app);
+                             }
+                             None => {}
+                         }
                         // Drain any trigger-generated auto-sends.
                         let sends: Vec<String> = app.game.auto_send_queue.drain(..).collect();
                         for line in sends {
@@ -368,8 +371,7 @@ fn drain_net_events(app: &mut App) {
 /// Establish a new [`Connection`] to the server identified by `server_id`.
 ///
 /// If `char_id` is `Some`, the corresponding character's aliases, triggers,
-/// and sidebar layout are loaded from the config and the credential stored in
-/// the OS keyring is used for auto-login.  Passing `None` opens an
+/// and sidebar layout are loaded from the config.  Passing `None` opens an
 /// unauthenticated session without any character-specific configuration.
 ///
 /// On success the application state transitions to [`AppState::Game`].
@@ -382,22 +384,15 @@ async fn do_connect(app: &mut App, server_id: &str, char_id: Option<&str>) {
         }
     };
 
-    // Resolve character name and auto-login credentials.
-    let (char_name, auto_login, char_id_owned) = if let Some(cid) = char_id {
+    // Resolve character name.
+    let (char_name, char_id_owned) = if let Some(cid) = char_id {
         match app.config.characters.iter().find(|c| c.id == cid) {
             Some(c) => {
                 info!(
                     "Connecting to {} ({}) as {}",
                     server.name, server.host, c.name
                 );
-                let login = c.effective_login().to_string();
-                let password = config::get_password(&server.id, &login).unwrap_or(None);
-                let auto_login = if c.login.is_some() || password.is_some() {
-                    Some((login, password))
-                } else {
-                    None
-                };
-                (c.name.clone(), auto_login, Some(cid.to_string()))
+                (c.name.clone(), Some(cid.to_string()))
             }
             None => {
                 tracing::warn!("Connect: char_id {cid} not found in config");
@@ -409,7 +404,7 @@ async fn do_connect(app: &mut App, server_id: &str, char_id: Option<&str>) {
             "Connecting to {} ({}) without a saved character",
             server.name, server.host
         );
-        (String::from("(anonymous)"), None, None)
+        (String::from("(anonymous)"), None)
     };
 
     let size = terminal_size();
@@ -417,7 +412,6 @@ async fn do_connect(app: &mut App, server_id: &str, char_id: Option<&str>) {
         server.host.clone(),
         server.port,
         server.tls,
-        auto_login,
         size,
     );
 
@@ -597,6 +591,42 @@ fn game_remove_trigger(app: &mut App, id_prefix: String) {
     } else {
         app.game
             .push_system(&format!("No trigger with id prefix '{}'.", id_prefix));
+    }
+}
+
+/// Show stored credentials for the connected character.
+///
+/// Displays the login name and whether a password is stored in the keyring,
+/// along with the password hint if one is configured.
+fn game_show_credentials(app: &mut App) {
+    let Some(cid) = app.connected_char_id.clone() else {
+        app.game.push_system("No character selected.");
+        return;
+    };
+    let Some(server_id) = app.connected_server_id.as_deref() else {
+        app.game.push_system("No server connected.");
+        return;
+    };
+    if let Some(ch) = app.config.characters.iter().find(|c| c.id == cid) {
+        match config::get_credentials(server_id, ch) {
+            Ok((login, has_password, hint)) => {
+                app.game.push_system(&format!("Character: {}", ch.name));
+                app.game.push_system(&format!("Login name: {}", login));
+                if has_password {
+                    app.game.push_system("Password: stored in keyring");
+                } else {
+                    app.game.push_system("Password: not stored");
+                }
+                if let Some(h) = hint {
+                    app.game.push_system(&format!("Hint: {}", h));
+                }
+            }
+            Err(e) => {
+                app.game.push_system(&format!("Error retrieving credentials: {e}"));
+            }
+        }
+    } else {
+        app.game.push_system("Character not found in config.");
     }
 }
 

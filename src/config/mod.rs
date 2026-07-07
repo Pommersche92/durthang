@@ -370,6 +370,21 @@ pub fn store_password(
     keyring_entry(server_id, character_name)?.set_password(password)
 }
 
+/// Check if the system keyring is available and working.
+/// Returns `true` if the keyring can be accessed, `false` if using mock backend.
+pub fn is_keyring_available() -> bool {
+    // Try to create an entry and check if it's a real keyring or mock
+    match keyring::Entry::new(KEYRING_SERVICE, "test") {
+        Ok(entry) => {
+            // On some platforms, we can check if the entry is mock by trying to get its password
+            // If it returns NoEntry, the keyring is working (just no entry exists)
+            // If it returns a different error, the keyring might not be available
+            matches!(entry.get_password(), Ok(_) | Err(keyring::Error::NoEntry))
+        }
+        Err(_) => false,
+    }
+}
+
 /// Retrieve the stored password for a character from the OS keyring.
 /// Returns `None` if no entry exists yet.
 pub fn get_password(server_id: &str, character_name: &str) -> keyring::Result<Option<String>> {
@@ -383,4 +398,19 @@ pub fn get_password(server_id: &str, character_name: &str) -> keyring::Result<Op
 /// Remove the stored password for a character from the OS keyring.
 pub fn delete_password(server_id: &str, character_name: &str) -> keyring::Result<()> {
     keyring_entry(server_id, character_name)?.delete_credential()
+}
+
+/// Get credential information for a character.
+///
+/// Returns a tuple of (login_name, has_password, password_hint) where:
+/// - `login_name` is the effective login name (falls back to character name if no separate login)
+/// - `has_password` indicates whether a password is stored in the keyring
+/// - `password_hint` is the optional hint from the character config
+pub fn get_credentials(
+    server_id: &str,
+    character: &Character,
+) -> keyring::Result<(String, bool, Option<String>)> {
+    let login = character.effective_login().to_string();
+    let has_password = get_password(server_id, &login)?.is_some();
+    Ok((login, has_password, character.password_hint.clone()))
 }

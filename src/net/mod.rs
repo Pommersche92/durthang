@@ -19,9 +19,6 @@
 //!   - TLS: when `tls = true` the plain TCP stream is wrapped with rustls after
 //!     the TCP handshake completes. System root certificates are loaded via
 //!     `rustls-native-certs`.
-//!   - Auto-login: when `auto_login = Some((login, password))` is given the
-//!     task sends the login on the first server prompt and the password on the
-//!     second prompt.
 //!   - The task gracefully shuts down when either the TCP stream closes or the
 //!     UI drops its end of the channel.
 
@@ -160,21 +157,17 @@ impl Connection {
     /// Spawn the network task and return a `Connection` handle.
     ///
     /// - `tls`: wrap the TCP stream with TLS (rustls + system root certs).
-    /// - `auto_login`: when `Some((login, opt_password))`, the task automatically
-    ///   sends `login` on the first server output and `password` (if `Some`) on
-    ///   the first prompt that follows.
     pub fn spawn(
         host: String,
         port: u16,
         tls: bool,
-        auto_login: Option<(String, Option<String>)>,
         initial_size: (u16, u16),
     ) -> Self {
         let (net_tx, net_rx) = mpsc::channel::<NetEvent>(256);
         let (ui_tx, ui_rx) = mpsc::channel::<UiEvent>(64);
 
         tokio::spawn(async move {
-            run_connection(host, port, tls, auto_login, initial_size, net_tx, ui_rx).await;
+            run_connection(host, port, tls, initial_size, net_tx, ui_rx).await;
         });
 
         Connection {
@@ -401,7 +394,6 @@ async fn run_connection(
     host: String,
     port: u16,
     tls: bool,
-    auto_login: Option<(String, Option<String>)>,
     initial_size: (u16, u16),
     tx: mpsc::Sender<NetEvent>,
     ui_rx: mpsc::Receiver<UiEvent>,
@@ -438,7 +430,6 @@ async fn run_connection(
                     initial_size,
                     tx,
                     ui_rx,
-                    auto_login,
                 )
                 .await;
             }
@@ -457,7 +448,6 @@ async fn run_connection(
             initial_size,
             tx,
             ui_rx,
-            auto_login,
         )
         .await;
     }
@@ -513,19 +503,12 @@ fn safe_prompt_end(buf: &[u8]) -> usize {
 }
 
 /// Core read/write loop — shared between plain-TCP and TLS connections.
-///
-/// Auto-login:
-///   Step 0 → fires on the FIRST server output (any line or prompt) → sends login.
-///   Step 1 → fires on the next PROMPT (partial line, no \n) → sends password if stored.
-/// Using "first output" for login covers both MUDs that send a prompt without \n
-/// and those that send the login line with \n.
 async fn connection_loop(
     mut reader: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
     mut writer: Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
     initial_size: (u16, u16),
     tx: mpsc::Sender<NetEvent>,
     mut ui_rx: mpsc::Receiver<UiEvent>,
-    auto_login: Option<(String, Option<String>)>,
 ) {
     let _ = tx.send(NetEvent::Connected).await;
 
@@ -537,10 +520,6 @@ async fn connection_loop(
 
     let mut read_buf = BytesMut::with_capacity(4096);
     let mut line_buf = String::new();
-    // 0 = send login on first server output (line or prompt)
-    // 1 = send password on next PROMPT
-    // 2 = done
-    let mut auto_login_step: u8 = if auto_login.is_some() { 0 } else { 2 };
     // Approximate round-trip latency: timestamp an outstanding user command
     // (or periodic probe) and sample when the next server output arrives.
     // Stale timestamps are dropped so unrelated output does not create spikes.
@@ -585,45 +564,14 @@ async fn connection_loop(
                         }
                         let had_prompt = !line_buf.is_empty();
 
-                        // Auto-login state machine.
-                        // Step 0: fire on ANY first server output (line or prompt).
-                        if auto_login_step == 0 && (had_complete_lines || had_prompt) {
-                            if let Some((ref login, _)) = auto_login {
-                                info!("Auto-login: sending login name");
-                                auto_login_step = 1;
-                                let mut data = login.as_bytes().to_vec();
-                                data.extend_from_slice(b"\r\n");
-                                if let Err(e) = writer.write_all(&data).await {
-                                    error!("Auto-login write error: {e}");
-                                    let _ = tx.send(NetEvent::Disconnected(e.to_string())).await;
-                                    break;
-                                }
-                            }
-                        // Step 1: fire only on a PROMPT – wait for the actual password prompt.
-                        } else if auto_login_step == 1 && had_prompt {
-                            if let Some((_, Some(ref password))) = auto_login {
-                                info!("Auto-login: sending password");
-                                auto_login_step = 2;
-                                let mut data = password.as_bytes().to_vec();
-                                data.extend_from_slice(b"\r\n");
-                                if let Err(e) = writer.write_all(&data).await {
-                                    error!("Auto-login password write error: {e}");
-                                    let _ = tx.send(NetEvent::Disconnected(e.to_string())).await;
-                                    break;
-                                }
-                            } else {
-                                // No stored password – user will type it manually.
-                                auto_login_step = 2;
-                            }
-                        }
-
                         if had_prompt {
                             // Don't send a prompt if `line_buf` ends with an
                             // incomplete ANSI escape sequence — keep the fragment
                             // for the next read so it can be reassembled.
                             let safe = safe_prompt_end(line_buf.as_bytes());
                             if safe > 0 {
-                                let prompt_text: String = line_buf[..safe].chars()
+                                let prompt_text: String = line_buf[..safe]
+                                    .chars()
                                     .filter(|&c| c != '\r')
                                     .collect();
                                 let _ = tx.send(NetEvent::Prompt(prompt_text)).await;

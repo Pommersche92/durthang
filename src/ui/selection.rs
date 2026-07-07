@@ -164,6 +164,12 @@ pub enum Dialog {
     ConfirmDelete {
         target: DeleteTarget,
     },
+    /// Show credentials for a character (read-only, with password toggle).
+    ShowCredentials {
+        char_id: String,
+        /// Whether the password is currently visible (toggled by 'v' key).
+        show_password: bool,
+    },
 }
 
 impl Dialog {
@@ -245,7 +251,7 @@ impl Dialog {
             Dialog::EditServer { inner, .. } => Some(inner),
             Dialog::AddCharacter { inner, .. } => Some(inner),
             Dialog::EditCharacter { inner, .. } => Some(inner),
-            Dialog::ConfirmDelete { .. } => None,
+            Dialog::ConfirmDelete { .. } | Dialog::ShowCredentials { .. } => None,
         }
     }
 }
@@ -368,13 +374,26 @@ fn handle_dialog_key(
     key: KeyEvent,
 ) -> bool {
     match dialog {
+        Dialog::ShowCredentials { .. } => {
+            // 'v' toggles password visibility, Esc/q closes the dialog.
+            match key.code {
+                KeyCode::Char('v') | KeyCode::Char('V') => {
+                    if let Dialog::ShowCredentials { show_password, .. } = dialog {
+                        *show_password = !*show_password;
+                    }
+                    false
+                }
+                KeyCode::Esc | KeyCode::Char('q') => true,
+                _ => false,
+            }
+        }
         Dialog::ConfirmDelete { target } => match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
                 match target {
                     DeleteTarget::Server(id) => {
                         let id = id.clone();
                         config.characters.retain(|c| c.server_id != id);
-                        config.servers.retain(|s| s.id != id);
+                        config.servers.retain(|s| s.id == id);
                     }
                     DeleteTarget::Character(id) => {
                         let id = id.clone();
@@ -525,6 +544,11 @@ fn handle_dialog_key(
                         ch.notes = if notes.is_empty() { None } else { Some(notes) };
                         if !password.is_empty() {
                             let new_login = ch.effective_login().to_string();
+                            tracing::debug!(
+                                "Storing password for server_id={}, login={}",
+                                server_id,
+                                new_login
+                            );
                             if let Err(e) =
                                 config::store_password(&server_id, &new_login, &password)
                             {
@@ -683,6 +707,16 @@ pub fn handle_key(
             }
         }
 
+        // 'c' — show credentials for the selected character.
+        KeyCode::Char('c') => {
+            if let Some(TreeRow::Character { char_id, .. }) = current {
+                state.dialog = Some(Dialog::ShowCredentials {
+                    char_id: char_id.clone(),
+                    show_password: false,
+                });
+            }
+        }
+
         _ => {}
     }
 
@@ -707,6 +741,9 @@ pub fn draw(frame: &mut Frame, state: &SelectState, config: &Config) {
     if let Some(dialog) = &state.dialog {
         match dialog {
             Dialog::ConfirmDelete { target } => draw_confirm_dialog(frame, area, target, config),
+            Dialog::ShowCredentials { char_id, show_password } => {
+                draw_credentials_dialog(frame, area, char_id, *show_password, config);
+            }
             _ => {
                 if let Some(d) = dialog.as_text_dialog() {
                     draw_text_dialog(frame, area, d);
@@ -826,9 +863,10 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, dialog: &Option<Dialog>) {
     let hints = match dialog {
         None => {
             " ↑↓ move   Space/←/► expand/collapse   \
-             n add char   N add server   e edit   d delete   Enter connect/toggle   q quit"
+             n add char   N add server   e edit   d delete   c credentials   Enter connect/toggle   q quit"
         }
         Some(Dialog::ConfirmDelete { .. }) => " y yes   n / Esc no",
+        Some(Dialog::ShowCredentials { .. }) => " v toggle password   Esc/q close ",
         Some(_) => " Tab/↑↓ next field   Enter confirm   Esc cancel",
     };
     let p = Paragraph::new(hints).style(Style::default().add_modifier(Modifier::REVERSED));
@@ -836,8 +874,13 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, dialog: &Option<Dialog>) {
 }
 
 fn draw_text_dialog(frame: &mut Frame, area: Rect, d: &TextDialog) {
+    let keyring_available = config::is_keyring_available();
     let dialog_w = 58u16;
-    let dialog_h = d.fields.len() as u16 + 4;
+    let dialog_h = if keyring_available {
+        d.fields.len() as u16 + 4
+    } else {
+        d.fields.len() as u16 + 6
+    };
     let dialog_area = centered_rect(dialog_w, dialog_h, area);
 
     frame.render_widget(Clear, dialog_area);
@@ -862,6 +905,21 @@ fn draw_text_dialog(frame: &mut Frame, area: Rect, d: &TextDialog) {
         } else {
             lines.push(Line::from(content));
         }
+    }
+
+    // Add warning if keyring is not available
+    if !keyring_available {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            "WARNING: System keyring not available!",
+            Style::default()
+                .fg(Color::Red)
+                .add_modifier(Modifier::BOLD),
+        ));
+        lines.push(Line::styled(
+            "Password will not be saved.",
+            Style::default().fg(Color::DarkGray),
+        ));
     }
 
     let paragraph = Paragraph::new(lines).block(
@@ -916,6 +974,97 @@ fn draw_confirm_dialog(frame: &mut Frame, area: Rect, target: &DeleteTarget, con
         Block::bordered()
             .title(" Confirm Delete ")
             .title_bottom(" y yes   n / Esc no "),
+    );
+    frame.render_widget(paragraph, dialog_area);
+}
+
+fn draw_credentials_dialog(
+    frame: &mut Frame,
+    area: Rect,
+    char_id: &str,
+    show_password: bool,
+    config: &Config,
+) {
+    let dialog_w = 58u16;
+    let dialog_h = 12u16;
+    let dialog_area = centered_rect(dialog_w, dialog_h, area);
+
+    frame.render_widget(Clear, dialog_area);
+
+    // Find the character and its credentials.
+    let (char_name, server_id, login, hint) = config
+        .characters
+        .iter()
+        .find(|c| c.id == char_id)
+        .map(|c| {
+            let login = c.effective_login().to_string();
+            (c.name.clone(), c.server_id.clone(), login, c.password_hint.clone())
+        })
+        .unwrap_or_else(|| ("?".to_string(), "?".to_string(), "?".to_string(), None));
+
+    let keyring_available = config::is_keyring_available();
+    let password_display = if show_password {
+        if !keyring_available {
+            "keyring unavailable".to_string()
+        } else {
+            // Try to get the actual password from keyring
+            tracing::debug!(
+                "Looking up password for server_id={}, login={}",
+                server_id,
+                login
+            );
+            match config::get_password(&server_id, &login) {
+                Ok(Some(pw)) => {
+                    tracing::debug!("Password found in keyring");
+                    pw
+                }
+                Ok(None) => {
+                    tracing::debug!("No password entry in keyring");
+                    "not stored".to_string()
+                }
+                Err(e) => {
+                    tracing::debug!("Keyring error: {e}");
+                    format!("error: {e}")
+                }
+            }
+        }
+    } else {
+        "••••••••".to_string()
+    };
+
+    let mut lines: Vec<Line> = vec![
+        Line::from(""),
+        Line::styled(
+            format!("Character: {}", char_name),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Line::from(format!("Server ID: {}", server_id)),
+        Line::from(format!("Login: {}", login)),
+        Line::from(format!("Password: {}", password_display)),
+    ];
+
+    if !keyring_available {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            "WARNING: System keyring not available!",
+            Style::default()
+                .fg(Color::Red)
+                .add_modifier(Modifier::BOLD),
+        ));
+        lines.push(Line::styled(
+            "Passwords cannot be stored in this environment.",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
+    if let Some(h) = hint {
+        lines.push(Line::from(format!("Hint: {}", h)));
+    }
+
+    let paragraph = Paragraph::new(lines).block(
+        Block::bordered()
+            .title(" Credentials ")
+            .title_bottom(" v toggle password   Esc/q close "),
     );
     frame.render_widget(paragraph, dialog_area);
 }
