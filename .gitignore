@@ -1,2 +1,5 @@
 /target
 /dist
+
+# AUR repository clones (not part of the main repo)
+aur/*/aur-repo/
