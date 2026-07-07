@@ -272,6 +272,10 @@ impl GameState {
 
     /// Finalise the input, push to history, expand aliases, and return the
     /// action to perform.
+    ///
+    /// When the input is empty, we still send a newline to the server.
+    /// This is required for MUD servers (e.g., Avalon) that display
+    /// "press enter to continue" prompts and wait for a blank line.
     fn confirm_input(&mut self) -> Option<GameAction> {
         let raw = self.input.trim_end().to_string();
         self.input.clear();
@@ -279,8 +283,10 @@ impl GameState {
         self.history_idx = None;
         self.history_snapshot.clear();
 
+        // Send empty line to server (needed for "press enter to continue" prompts)
+        // but don't add to history or echo.
         if raw.is_empty() {
-            return None;
+            return Some(GameAction::SendLine(String::new()));
         }
 
         // Always record raw input in history.

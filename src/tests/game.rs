@@ -207,3 +207,61 @@ fn on_connect_clears_latency() {
     state.on_connect();
     assert!(state.latency.is_none());
 }
+
+// ---------------------------------------------------------------------------
+// Empty line handling (for "press enter to continue" prompts)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn empty_input_sends_blank_line() {
+    // When input is empty and Enter is pressed, a blank line should be sent
+    // to the server. This is required for MUD servers like Avalon that
+    // display "press enter to continue" prompts.
+    use crossterm::event::KeyCode;
+    use crate::ui::game::GameAction;
+
+    let mut state = GameState::new();
+    // Input is empty by default
+    assert!(state.input.is_empty());
+
+    // Simulate pressing Enter on empty input
+    let key = crossterm::event::KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::empty());
+    let action = crate::ui::game::handle_key(&mut state, key);
+
+    // Should return SendLine with empty string (which will be sent as \r\n)
+    assert!(matches!(action, Some(GameAction::SendLine(ref s)) if s.is_empty()));
+}
+
+#[test]
+fn empty_input_does_not_add_to_history() {
+    // Empty lines should not pollute the command history
+    use crossterm::event::KeyCode;
+
+    let mut state = GameState::new();
+    // Add a command to history first
+    state.history.push("look".to_string());
+    assert_eq!(state.history.len(), 1);
+
+    // Simulate pressing Enter on empty input
+    let key = crossterm::event::KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::empty());
+    let _ = crate::ui::game::handle_key(&mut state, key);
+
+    // History should still have only 1 entry (not polluted with empty string)
+    assert_eq!(state.history.len(), 1);
+}
+
+#[test]
+fn empty_input_does_not_echo() {
+    // Empty lines should not be echoed to scrollback
+    use crossterm::event::KeyCode;
+
+    let mut state = GameState::new();
+    assert_eq!(state.lines.len(), 0);
+
+    // Simulate pressing Enter on empty input
+    let key = crossterm::event::KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::empty());
+    let _ = crate::ui::game::handle_key(&mut state, key);
+
+    // Scrollback should still be empty (no echo)
+    assert_eq!(state.lines.len(), 0);
+}
